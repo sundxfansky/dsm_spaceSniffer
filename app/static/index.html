@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light">
+    <title>DSM Storage Inspector</title>
+    <link rel="stylesheet" href="/static/styles.css">
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand-mark" aria-hidden="true"><span></span><span></span><span></span></div>
+      <div>
+        <h1>DSM Storage Inspector</h1>
+        <p>群晖存储空间分析</p>
+      </div>
+      <div class="connection-state" id="connection-state"><i></i><span>未连接</span></div>
+    </header>
+
+    <main>
+      <section class="connection-panel" aria-labelledby="connection-title">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">连接配置</p>
+            <h2 id="connection-title">连接群晖</h2>
+          </div>
+          <p class="section-note">需要在 DSM 控制面板中启用 SSH 服务</p>
+        </div>
+
+        <form id="connection-form" class="connection-form">
+          <label class="field address-field">
+            <span>群晖地址</span>
+            <input id="address" name="address" placeholder="https://nas.local:5001" autocomplete="url" required>
+          </label>
+          <label class="field port-field">
+            <span>SSH 端口</span>
+            <input id="ssh-port" name="ssh_port" type="number" value="22" min="1" max="65535" required>
+          </label>
+          <label class="field">
+            <span>账户</span>
+            <input id="username" name="username" autocomplete="username" required>
+          </label>
+          <label class="field">
+            <span>密码</span>
+            <div class="password-wrap">
+              <input id="password" name="password" type="password" autocomplete="current-password" required>
+              <button type="button" class="icon-button" id="toggle-password" aria-label="显示密码" title="显示密码">显示</button>
+            </div>
+          </label>
+          <button class="primary-button" id="connect-button" type="submit">
+            <span>连接并读取存储空间</span>
+          </button>
+        </form>
+        <div class="section-note" id="saved-connection-status" role="status">连接信息（含密码）会加密保存在当前浏览器，下次自动填回。请使用自己的浏览器账户。</div>
+        <div class="inline-message" id="connection-message" role="status" aria-live="polite"></div>
+        <details id="connection-error" class="error-details is-hidden">
+          <summary>错误详情（点击展开/收起）</summary>
+          <pre></pre>
+        </details>
+      </section>
+
+      <section id="workspace" class="workspace is-hidden" aria-live="polite">
+        <div class="volume-section">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">扫描范围</p>
+              <h2>选择存储空间</h2>
+            </div>
+            <span class="fingerprint" id="fingerprint"></span>
+          </div>
+          <div id="volume-grid" class="volume-grid"></div>
+
+          <div class="scan-options">
+            <label class="field compact-field">
+              <span>文件 / 文件夹大小阈值</span>
+              <div class="unit-input"><input id="large-file-mb" type="number" value="1024" min="0" max="10000000" required><b>MiB</b></div>
+            </label>
+            <p class="section-note">边扫描边显示，保留全部匹配结果。文件夹大小包含子目录；阈值设为 0 可列出全部普通文件及包含文件的目录。</p>
+            <button class="primary-button analyze-button" id="analyze-button" type="button">开始分析</button>
+          </div>
+        </div>
+
+        <div id="progress-panel" class="progress-panel is-hidden">
+          <div class="progress-copy"><strong id="progress-stage">正在准备</strong><span id="progress-value">0%</span></div>
+          <div class="progress-track"><div id="progress-bar"></div></div>
+          <p>扫描时间取决于文件数量。分析期间请保持群晖在线。</p>
+          <button id="stop-button" class="secondary-button" type="button" disabled>停止分析</button>
+          <details id="scan-error" class="error-details is-hidden">
+            <summary>错误详情（点击展开/收起）</summary>
+            <pre></pre>
+          </details>
+        </div>
+
+        <section id="results" class="results is-hidden">
+          <div id="scan-notice" class="scan-notice" role="status"></div>
+          <details id="scan-warnings" class="error-details result-errors is-hidden">
+            <summary>错误详情（点击展开/收起）</summary>
+            <pre></pre>
+          </details>
+          <div class="summary-strip" id="summary-strip"></div>
+          <div class="tabs" role="tablist" aria-label="分析结果">
+            <button class="tab is-active" data-tab="treemap" role="tab">空间地图</button>
+            <button class="tab" data-tab="large-directories" role="tab">大文件夹 <span id="large-directory-count"></span></button>
+            <button class="tab" data-tab="large-files" role="tab">大文件 <span id="large-count"></span></button>
+            <button class="tab" data-tab="hardlinks" role="tab">硬链接 <span id="hardlink-count"></span></button>
+            <button class="tab" data-tab="directories" role="tab">一级目录占用 <span id="directory-count"></span></button>
+          </div>
+          <div class="result-toolbar">
+            <input id="result-search" type="search" placeholder="筛选路径" aria-label="筛选结果路径">
+            <button id="export-button" class="secondary-button" type="button">导出 JSON</button>
+          </div>
+          <div id="result-content" class="result-content"></div>
+          <section id="space-map" class="space-map is-hidden" aria-label="存储空间矩形树图">
+            <div class="map-heading"><div><span class="map-eyebrow">SPACE EXPLORER</span><h3>固定画布 · 多层目录树图</h3></div><span id="map-status" class="map-status"></span></div>
+            <div class="map-navigation"><button id="map-up" class="secondary-button" type="button">↑ 上一级</button><nav id="map-breadcrumbs" aria-label="当前目录"></nav></div>
+            <div class="map-layout"><div><div id="map-canvas" class="map-canvas" aria-label="方块面积代表已扫描的逻辑大小"></div><div class="map-legend"><span data-kind="folder">文件夹</span><span data-kind="video">视频</span><span data-kind="archive">压缩包 / 镜像</span><span data-kind="file">其他文件</span><span data-kind="aggregate">合并项</span></div></div>
+              <aside class="map-sidebar"><div id="map-current" class="map-current"></div><div id="map-selection" class="map-selection" role="status">点击文件夹进入，点击文件查看完整路径。</div><button id="map-retry" class="is-hidden" type="button">重试加载</button><h4>当前层级 · 全部文件 / 目录</h4><div id="map-list" class="map-list"></div><div class="map-pagination"><button id="map-prev" type="button">上一页</button><span id="map-page"></span><button id="map-next" type="button">下一页</button></div></aside>
+            </div>
+            <p class="map-footnote">树图包含阈值以下的文件，阈值仅筛选“大文件 / 大文件夹”列表。面积为已读取的逻辑大小，非磁盘实际占用；父子目录不重复相加，硬链接按路径计数。进入目录可分页查看全部文件；过多的小方块仅在图面合并，零字节文件在列表中展示。</p>
+          </section>
+          <div id="table-pagination" class="result-toolbar"><button id="previous-page" class="secondary-button">上一页</button><span id="page-status"></span><button id="next-page" class="secondary-button">下一页</button></div>
+        </section>
+      </section>
+    </main>
+
+    <footer>群晖侧只读。连接信息仅在当前浏览器加密保存，服务端不保存密码。</footer>
+    <script src="/static/connection-store.js" defer></script>
+    <script src="/static/treemap.js" defer></script>
+    <script src="/static/app.js" defer></script>
+  </body>
+</html>

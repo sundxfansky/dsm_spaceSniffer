@@ -1,0 +1,27 @@
+__pycache__/
+.pytest_cache/
+.venv/
+.verifyenv/
+*.py[cod]
+*.log
+.DS_Store
+scan-results-*/
+
+# Local configuration and credentials
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Test and tooling caches
+.coverage
+.coverage.*
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# Python build artifacts
+build/
+dist/
+*.egg-info/

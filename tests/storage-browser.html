@@ -1,0 +1,30 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Connection storage regression test</title>
+<p id="result">Running storage test…</p>
+<script src="/app/static/connection-store.js"></script>
+<script>
+(async () => {
+  const expected = {address: "https://example.invalid", username: "test-only", password: "test-only-secret", ssh_port: 2222};
+  try {
+    if (!location.search) {
+      await Promise.all([connectionStore.save({...expected, username: "old"}), connectionStore.save(expected)]);
+      location.search = "?reload";
+      return;
+    }
+    const restored = await connectionStore.load();
+    if (JSON.stringify(restored) !== JSON.stringify(expected)) throw Error("Reload / ordering failed");
+    const record = await new Promise((resolve, reject) => {
+      const r = indexedDB.open("dsm-connections", 1);
+      r.onsuccess = () => {
+        const get = r.result.transaction("connection").objectStore("connection").get("last");
+        get.onsuccess = () => {resolve(get.result); r.result.close();};
+        get.onerror = reject;
+      };
+      r.onerror = reject;
+    });
+    if (record.key.extractable || new TextDecoder().decode(record.data).includes(expected.password)) throw Error("Plaintext or exportable key");
+    document.querySelector("#result").textContent = "PASS: reload restores all fields; concurrent saves keep latest; stored data is encrypted and key is non-exportable.";
+  } catch (e) {document.querySelector("#result").textContent = "FAIL: " + e.message;}
+})();
+</script>

@@ -1,0 +1,12 @@
+.git
+.idea
+.vscode
+__pycache__
+.pytest_cache
+.venv
+.verifyenv
+tests
+*.pyc
+*.pyo
+*.log
+scan-results-*/
