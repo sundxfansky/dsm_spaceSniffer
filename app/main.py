@@ -6,8 +6,9 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from .jobs import JobStore
-from .models import AnalysisRequest, Credentials, DiscoveryResponse, JobCreated, JobResponse
+from .models import AnalysisRequest, CleanupRequest, Credentials, DiscoveryResponse, JobCreated, JobResponse, TransmissionServer
 from .synology import SynologyError, discover
+from .transmission import TransmissionClient, TransmissionError
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -51,6 +52,15 @@ def discover_volumes(credentials: Credentials) -> DiscoveryResponse:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+@app.post("/api/transmission/test")
+@app.post("/api/transmission/check")
+def test_transmission(server: TransmissionServer) -> dict:
+    try:
+        return TransmissionClient(server).test()
+    except (TransmissionError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @app.post("/api/jobs", response_model=JobCreated, status_code=202)
 def create_job(request: AnalysisRequest) -> JobCreated:
     return JobCreated(job_id=jobs.create(request))
@@ -67,6 +77,17 @@ def get_job(job_id: str) -> JobResponse:
 @app.post("/api/jobs/{job_id}/cancel", response_model=JobResponse)
 def cancel_job(job_id: str) -> JobResponse:
     job = jobs.cancel(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="任务不存在")
+    return JobResponse.model_validate(job)
+
+
+@app.post("/api/jobs/{job_id}/cleanup", response_model=JobResponse)
+def cleanup_job(job_id: str, request: CleanupRequest) -> JobResponse:
+    try:
+        job = jobs.cleanup(job_id, request)
+    except (SynologyError, TransmissionError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     if job is None:
         raise HTTPException(status_code=404, detail="任务不存在")
     return JobResponse.model_validate(job)

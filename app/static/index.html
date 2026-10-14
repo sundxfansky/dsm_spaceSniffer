@@ -75,10 +75,31 @@
               <span>文件 / 文件夹大小阈值</span>
               <div class="unit-input"><input id="large-file-mb" type="number" value="1024" min="0" max="10000000" required><b>MiB</b></div>
             </label>
+            <label class="field compact-field">
+              <span>旧任务时间</span>
+              <div class="unit-input"><input id="tr-age-days" type="number" value="30" min="1" max="3650" required><b>天</b></div>
+            </label>
+            <label class="field compact-field">
+              <span>单文件上限</span>
+              <div class="unit-input"><input id="tr-max-file-mb" type="number" value="1024" min="0" max="10000000" required><b>MiB</b></div>
+            </label>
             <p class="section-note">边扫描边显示，保留全部匹配结果。文件夹大小包含子目录；阈值设为 0 可列出全部普通文件及包含文件的目录。</p>
             <button class="primary-button analyze-button" id="analyze-button" type="button">开始分析</button>
           </div>
         </div>
+
+        <section class="transmission-section" aria-labelledby="transmission-title">
+          <div class="section-heading">
+            <div><p class="eyebrow">TRANSMISSION</p><h2 id="transmission-title">下载服务器</h2></div>
+            <p class="section-note">填写 Transmission RPC 和两端挂载路径；分析仅读取任务，删除需要逐项确认。</p>
+          </div>
+          <div id="transmission-list" class="transmission-list"></div>
+          <div class="transmission-actions">
+            <button id="add-transmission" class="secondary-button" type="button">添加 Transmission</button>
+            <button id="test-transmissions" class="secondary-button" type="button">测试全部连接</button>
+            <span id="transmission-message" class="inline-message" role="status"></span>
+          </div>
+        </section>
 
         <div id="progress-panel" class="progress-panel is-hidden">
           <div class="progress-copy"><strong id="progress-stage">正在准备</strong><span id="progress-value">0%</span></div>
@@ -103,6 +124,7 @@
             <button class="tab" data-tab="large-directories" role="tab">大文件夹 <span id="large-directory-count"></span></button>
             <button class="tab" data-tab="large-files" role="tab">大文件 <span id="large-count"></span></button>
             <button class="tab" data-tab="hardlinks" role="tab">硬链接 <span id="hardlink-count"></span></button>
+            <button class="tab" data-tab="transmission" role="tab">TR 清理候选 <span id="transmission-count"></span></button>
             <button class="tab" data-tab="directories" role="tab">一级目录占用 <span id="directory-count"></span></button>
           </div>
           <div class="result-toolbar">
@@ -123,7 +145,7 @@
       </section>
     </main>
 
-    <footer>群晖侧只读。连接信息仅在当前浏览器加密保存，服务端不保存密码。</footer>
+    <footer>扫描阶段群晖侧只读；清理候选需要逐项确认。连接信息仅在当前浏览器加密保存，服务端不保存密码。</footer>
     <script src="/static/connection-store.js" defer></script>
     <script src="/static/treemap.js" defer></script>
     <script src="/static/app.js" defer></script>

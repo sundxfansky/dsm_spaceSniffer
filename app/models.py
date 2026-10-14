@@ -34,12 +34,44 @@ class DiscoveryResponse(BaseModel):
     identity: dict | None = None
 
 
+class TransmissionServer(BaseModel):
+    """A Transmission RPC endpoint and the path mapping visible to DSM."""
+
+    name: str = Field(default="Transmission", min_length=1, max_length=128)
+    address: str = Field(min_length=1, max_length=512)
+    port: int = Field(default=9091, ge=1, le=65535)
+    username: str = Field(default="", max_length=128)
+    password: str = Field(default="", max_length=1024)
+    rpc_path: str = Field(default="/transmission/rpc", max_length=256)
+    mount_path: str = Field(min_length=1, max_length=4096)
+    local_path: str = Field(min_length=1, max_length=4096)
+    enabled: bool = True
+
+    @field_validator("name", "address", "rpc_path", "mount_path", "local_path")
+    @classmethod
+    def strip_text(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("不能为空")
+        return value
+
+    @field_validator("mount_path", "local_path")
+    @classmethod
+    def absolute_path(cls, value: str) -> str:
+        if not value.startswith("/"):
+            raise ValueError("路径必须以 / 开头")
+        return value.rstrip("/") or "/"
+
+
 VolumePath = Annotated[str, Field(pattern=r"^/volume[0-9]+$")]
 
 
 class AnalysisRequest(Credentials):
     volumes: list[VolumePath] = Field(min_length=1, max_length=32)
     large_file_mb: int = Field(default=1024, ge=0, le=10_000_000)
+    transmission_servers: list[TransmissionServer] = Field(default_factory=list, max_length=16)
+    transmission_max_file_mb: int = Field(default=1024, ge=0, le=10_000_000)
+    transmission_age_days: int = Field(default=30, ge=1, le=3650)
     # Legacy clients may still send these; results are no longer truncated.
     max_large_files: int = Field(default=0, ge=0, le=10_000_000)
     max_hardlink_groups: int = Field(default=0, ge=0, le=10_000_000)
@@ -63,3 +95,10 @@ class JobResponse(BaseModel):
     updated_at: str
     error: str | None = None
     result: dict | None = None
+
+
+class CleanupRequest(BaseModel):
+    candidate_ids: list[str] = Field(min_length=1, max_length=500)
+    delete_files: bool = True
+    delete_transmission_tasks: bool = True
+    create_rmed: bool = True

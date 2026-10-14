@@ -16,6 +16,7 @@ from urllib.parse import urlparse
 import paramiko
 
 from .models import AnalysisRequest, Credentials, VolumeInfo
+from .transmission import TransmissionClient, TransmissionError, find_candidates
 
 
 VOLUME_PATTERN = re.compile(r"^/volume[0-9]+$")
@@ -302,6 +303,9 @@ def analyze(
         # Bounded previews; full metadata lives in the task's on-demand index.
         previews: dict[str, list[tuple[int, str, int]]] = {}
         warnings: list[str] = []
+        transmission_connections: list[dict] = []
+        transmission_candidates: list[dict] = []
+        transmission_warnings: list[str] = []
         scanned_files = 0
         total_steps = len(request.volumes) * 2
         completed_steps = 0
@@ -327,12 +331,18 @@ def analyze(
                 "large_files_total": len(large_files),
                 "hardlinks": sorted(hardlinks, key=lambda row: row["shared_bytes"], reverse=True),
                 "hardlink_groups_total": len(hardlinks),
+                "transmission_connections": list(transmission_connections),
+                "transmission_candidates": list(transmission_candidates),
+                "transmission_candidates_total": len(transmission_candidates),
+                "transmission_warnings": list(transmission_warnings),
                 "scanned_files": scanned_files,
                 "warnings": list(warnings),
                 "complete": finished and not warnings,
                 "scan_finished": finished,
                 "scope": "大文件夹按所有层级的普通文件逻辑大小递归累加（含子目录，每条硬链接路径分别计数），父子目录不可相加；不是实际磁盘占用。一级目录占用由 du 单独统计。不跟随符号链接。",
-                "settings": {"large_file_mb": request.large_file_mb, "result_limit": None},
+                "settings": {"large_file_mb": request.large_file_mb, "result_limit": None,
+                             "transmission_age_days": request.transmission_age_days,
+                             "transmission_max_file_mb": request.transmission_max_file_mb},
             }
 
         def emit(force: bool = False) -> None:
@@ -435,6 +445,90 @@ def analyze(
 
         progress(97, "整理分析结果")
         check_cancelled(cancel_event)
+        if request.transmission_servers:
+            progress(98, "读取 Transmission 任务并匹配硬链接")
+            hardlinks = [group for volume, rows in linked_files.items() for group in group_hardlinks(rows, volume)]
+            transmission_connections, transmission_candidates, transmission_warnings = find_candidates(
+                request.transmission_servers,
+                hardlinks,
+                request.transmission_max_file_mb,
+                request.transmission_age_days,
+            )
+            warnings.extend(transmission_warnings)
         return snapshot(finished=True)
     finally:
         session.close()
+
+
+def cleanup_candidates(
+    request: AnalysisRequest,
+    result: dict,
+    candidate_ids: list[str],
+    delete_files: bool = True,
+    delete_transmission_tasks: bool = True,
+    create_rmed: bool = True,
+) -> dict:
+    """Delete only candidates published by this job and return per-row outcomes."""
+    available = {row.get("id"): row for row in result.get("transmission_candidates", [])}
+    selected = [available[item] for item in dict.fromkeys(candidate_ids) if item in available]
+    if len(selected) != len(set(candidate_ids)):
+        raise ValueError("存在不属于此任务或已失效的候选项")
+    if not selected:
+        raise ValueError("没有可清理的候选项")
+
+    allowed_volumes = tuple(request.volumes)
+    all_paths = sorted({path for row in selected for path in [row.get("dsm_path"), *row.get("hardlink_paths", [])] if path})
+    unsafe = [path for path in all_paths if not any(path == root or path.startswith(root + "/") for root in allowed_volumes)]
+    if unsafe:
+        raise ValueError("候选文件不在本次扫描的存储空间内")
+
+    warnings: list[str] = []
+    deleted_paths: list[str] = []
+    ssh_session = None
+    try:
+        if delete_files:
+            ssh_session = connect(request)
+            for path in all_paths:
+                marker = path + ".rmed"
+                try:
+                    command = f"rm -f -- {shlex.quote(path)}"
+                    if create_rmed:
+                        command += f" && : > {shlex.quote(marker)}"
+                    ssh_session.run(command, timeout=60)
+                    deleted_paths.append(path)
+                except SynologyError as exc:
+                    warnings.append(f"删除文件失败 {path}: {exc}")
+
+        task_status: dict[tuple[int, int], str] = {}
+        if delete_transmission_tasks:
+            for row in selected:
+                task_id = row.get("task_id")
+                server_index = int(row.get("server_index", -1))
+                key = (server_index, int(task_id)) if task_id is not None else (server_index, -1)
+                if key in task_status:
+                    continue
+                if server_index < 0 or server_index >= len(request.transmission_servers):
+                    task_status[key] = "服务器配置不存在"
+                    continue
+                try:
+                    TransmissionClient(request.transmission_servers[server_index]).remove_torrent(int(task_id), delete_local_data=False)
+                    task_status[key] = "已删除任务"
+                except (TransmissionError, ValueError) as exc:
+                    task_status[key] = str(exc)
+                    warnings.append(f"删除 Transmission 任务失败 {row.get('task_name', task_id)}: {exc}")
+        outcomes = []
+        for row in selected:
+            key = (int(row.get("server_index", -1)), int(row.get("task_id", -1)))
+            file_ok = not delete_files or all(path in deleted_paths for path in row.get("hardlink_paths", []))
+            task_ok = not delete_transmission_tasks or task_status.get(key) == "已删除任务"
+            outcomes.append({
+                "id": row["id"],
+                "dsm_path": row.get("dsm_path"),
+                "deleted_paths": [path for path in row.get("hardlink_paths", []) if path in deleted_paths],
+                "task": task_status.get(key, "未执行"),
+                "ok": file_ok and task_ok,
+            })
+        return {"outcomes": outcomes, "deleted_paths": deleted_paths, "warnings": warnings}
+    finally:
+        if ssh_session is not None:
+            ssh_session.close()

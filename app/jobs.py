@@ -5,9 +5,9 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 
-from .models import AnalysisRequest
+from .models import AnalysisRequest, CleanupRequest
 from .file_index import FileIndex
-from .synology import ScanCancelled, SynologyError, analyze
+from .synology import ScanCancelled, SynologyError, analyze, cleanup_candidates
 
 
 class JobStore:
@@ -15,6 +15,7 @@ class JobStore:
         self._jobs: dict[str, dict] = {}
         self._cancel_events: dict[str, threading.Event] = {}
         self._file_indexes: dict[str, FileIndex] = {}
+        self._requests: dict[str, AnalysisRequest] = {}
         self._lock = threading.Lock()
         self._executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="dsm-scan")
 
@@ -28,6 +29,7 @@ class JobStore:
         with self._lock:
             self._cancel_events[job_id] = threading.Event()
             self._file_indexes[job_id] = FileIndex()
+            self._requests[job_id] = request
             self._jobs[job_id] = {
                 "id": job_id,
                 "status": "queued",
@@ -76,6 +78,38 @@ class JobStore:
                            stage="分析已停止" if queued else "正在停止分析，保留已读取结果",
                            updated_at=self._now())
             return dict(job)
+
+    def cleanup(self, job_id: str, request: CleanupRequest) -> dict | None:
+        with self._lock:
+            job = self._jobs.get(job_id)
+            analysis_request = self._requests.get(job_id)
+            result = job.get("result") if job else None
+        if job is None:
+            return None
+        if result is None or analysis_request is None:
+            raise ValueError("任务尚未生成分析结果")
+        if job["status"] not in {"completed", "cancelled", "failed"}:
+            raise ValueError("分析仍在进行，完成后才能清理")
+        already_cleaned = set(result.get("transmission_cleaned_ids", []))
+        if already_cleaned.intersection(request.candidate_ids):
+            raise ValueError("所选候选中包含已处理项，请刷新结果后重试")
+        outcome = cleanup_candidates(
+            analysis_request,
+            result,
+            request.candidate_ids,
+            request.delete_files,
+            request.delete_transmission_tasks,
+            request.create_rmed,
+        )
+        updated = dict(result)
+        cleaned = set(updated.get("transmission_cleaned_ids", []))
+        cleaned.update(item["id"] for item in outcome.get("outcomes", []) if item.get("ok"))
+        updated["transmission_cleaned_ids"] = sorted(cleaned)
+        updated["transmission_cleanup"] = outcome
+        with self._lock:
+            self._jobs[job_id]["result"] = updated
+            self._jobs[job_id]["updated_at"] = self._now()
+            return dict(self._jobs[job_id])
 
     def _finish(self, job_id: str, **changes: object) -> None:
         # Completion and cancellation are serialized so a late finish cannot undo a stop.

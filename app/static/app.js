@@ -9,6 +9,8 @@ const state = {
   pollSequence: 0,
   pollError: false,
   stopRequested: false,
+  transmissionServers: [],
+  selectedTransmissionIds: new Set(),
   page: 1,
   pageSize: 100,
 };
@@ -67,7 +69,7 @@ async function api(path, options = {}) {
   let payload;
   try { payload = await response.json(); } catch { payload = {}; }
   if (!response.ok) {
-    const labels = { large_file_mb: "文件大小阈值", username: "账户", password: "密码", ssh_port: "SSH 端口", address: "群晖地址", volumes: "存储空间" };
+    const labels = { large_file_mb: "文件大小阈值", transmission_age_days: "TR 任务年龄", transmission_max_file_mb: "TR 单文件上限", transmission_servers: "Transmission 配置", username: "账户", password: "密码", ssh_port: "SSH 端口", address: "群晖地址", volumes: "存储空间" };
     const detail = Array.isArray(payload.detail)
       ? payload.detail.map((item) => `${labels[item.loc?.[1]] || item.loc?.slice(1).join(".") || "参数"}：${item.msg || "输入无效"}`).join("；")
       : payload.detail;
@@ -117,6 +119,80 @@ function renderVolumes(volumes) {
   }).join("");
 }
 
+function transmissionTemplate(server, index) {
+  const value = (key) => escapeHtml(server[key] ?? "");
+  return `<div class="transmission-card" data-index="${index}">
+    <label class="field"><span>名称</span><input data-key="name" value="${value("name")}" placeholder="客厅 TR"></label>
+    <label class="field"><span>RPC 地址</span><input data-key="address" value="${value("address")}" placeholder="http://tr.local"></label>
+    <label class="field"><span>端口</span><input data-key="port" type="number" min="1" max="65535" value="${value("port")}"></label>
+    <label class="field"><span>TR 挂载路径</span><input data-key="mount_path" value="${value("mount_path")}" placeholder="/downloads"></label>
+    <label class="field"><span>DSM 对应路径</span><input data-key="local_path" value="${value("local_path")}" placeholder="/volume1/downloads"></label>
+    <button type="button" class="secondary-button remove-transmission" data-remove="${index}">移除</button>
+    <label class="field"><span>账户（可选）</span><input data-key="username" value="${value("username")}" autocomplete="username"></label>
+    <label class="field"><span>密码（可选）</span><input data-key="password" type="password" value="${value("password")}" autocomplete="current-password"></label>
+    <div class="transmission-status" data-status>${server.statusText || "未测试连接"}</div>
+  </div>`;
+}
+
+function renderTransmissionServers() {
+  const list = $("#transmission-list");
+  if (!list) return;
+  list.innerHTML = state.transmissionServers.length
+    ? state.transmissionServers.map(transmissionTemplate).join("")
+    : `<div class="transmission-empty">尚未添加 Transmission。没有配置时只执行群晖文件扫描。</div>`;
+}
+
+function readTransmissionServers() {
+  return [...document.querySelectorAll(".transmission-card")].map((card, index) => {
+    const row = {...state.transmissionServers[index]};
+    card.querySelectorAll("[data-key]").forEach((input) => {
+      row[input.dataset.key] = input.dataset.key === "port" ? Number(input.value) : input.value.trim();
+    });
+    row.enabled = true;
+    return row;
+  });
+}
+
+async function testTransmission(index) {
+  const server = readTransmissionServers()[index];
+  if (!server) return;
+  const status = document.querySelector(`.transmission-card[data-index="${index}"] [data-status]`);
+  if (status) status.textContent = "连接中…";
+  try {
+    const result = await api("/api/transmission/test", {method: "POST", body: JSON.stringify(server)});
+    state.transmissionServers[index] = {...server, statusText: `在线 · ${result.torrent_count} 个任务${result.version ? ` · ${result.version}` : ""}`};
+    if (status) { status.textContent = state.transmissionServers[index].statusText; status.classList.add("is-online"); status.classList.remove("is-error"); }
+  } catch (error) {
+    state.transmissionServers[index] = {...server, statusText: `连接失败：${error.message}`};
+    if (status) { status.textContent = state.transmissionServers[index].statusText; status.classList.add("is-error"); status.classList.remove("is-online"); }
+  }
+}
+
+$("#add-transmission").addEventListener("click", () => {
+  state.transmissionServers = readTransmissionServers();
+  state.transmissionServers.push({name: `Transmission ${state.transmissionServers.length + 1}`, address: "", port: 9091, username: "", password: "", rpc_path: "/transmission/rpc", mount_path: "/downloads", local_path: "/volume1/downloads", enabled: true});
+  renderTransmissionServers();
+});
+
+$("#test-transmissions").addEventListener("click", async () => {
+  state.transmissionServers = readTransmissionServers();
+  if (!state.transmissionServers.length) { $("#transmission-message").textContent = "请先添加 Transmission"; return; }
+  $("#transmission-message").textContent = "正在测试连接…";
+  renderTransmissionServers();
+  await Promise.all(state.transmissionServers.map((_, index) => testTransmission(index)));
+  $("#transmission-message").textContent = "连接状态已更新";
+});
+
+$("#transmission-list").addEventListener("click", (event) => {
+  const remove = event.target.closest?.("[data-remove]");
+  if (remove) {
+    state.transmissionServers = readTransmissionServers().filter((_, index) => index !== Number(remove.dataset.remove));
+    renderTransmissionServers();
+  }
+});
+
+renderTransmissionServers();
+
 $("#connection-form").addEventListener("submit", async (event) => {
   event.preventDefault();
   const button = $("#connect-button");
@@ -152,7 +228,7 @@ $("#toggle-password").addEventListener("click", () => {
 });
 
 $("#analyze-button").addEventListener("click", async () => {
-  if (!$("#connection-form").reportValidity() || !$("#large-file-mb").reportValidity()) return;
+  if (!$("#connection-form").reportValidity() || !$("#large-file-mb").reportValidity() || !$("#tr-age-days").reportValidity() || !$("#tr-max-file-mb").reportValidity()) return;
   const volumes = $$("input[name='volume']:checked").map((input) => input.value);
   if (!volumes.length) {
     setConnectionMessage("请至少选择一个存储空间", true);
@@ -179,10 +255,14 @@ $("#analyze-button").addEventListener("click", async () => {
   updateProgress(0, "创建扫描任务");
   $("#progress-panel p").textContent = "扫描时间取决于文件数量。分析期间请保持群晖在线。";
   try {
+    state.transmissionServers = readTransmissionServers();
     const request = {
       ...readCredentials(),
       volumes,
       large_file_mb: Number($("#large-file-mb").value),
+      transmission_servers: state.transmissionServers,
+      transmission_age_days: Number($("#tr-age-days").value),
+      transmission_max_file_mb: Number($("#tr-max-file-mb").value),
     };
     const created = await api("/api/jobs", { method: "POST", body: JSON.stringify(request) });
     state.jobId = created.job_id;
@@ -289,10 +369,21 @@ function renderResults() {
     <div class="summary-item"><span>扫描空间</span><strong>${result.volumes.length}</strong></div>
     <div class="summary-item"><span>总容量</span><strong>${formatBytes(total)}</strong></div>
     <div class="summary-item"><span>已用容量</span><strong>${formatBytes(used)}</strong></div>
-    <div class="summary-item"><span>硬链接共享数据</span><strong>${formatBytes(shared)}</strong></div>`;
+    <div class="summary-item"><span>硬链接共享数据</span><strong>${formatBytes(shared)}</strong></div>
+    <div class="summary-item"><span>TR 清理候选</span><strong>${result.transmission_candidates_total || 0}</strong></div>`;
   $("#directory-count").textContent = result.directories.length;
   $("#large-count").textContent = result.large_files_total;
   $("#hardlink-count").textContent = result.hardlink_groups_total;
+  $("#transmission-count").textContent = result.transmission_candidates_total || 0;
+  (result.transmission_connections || []).forEach((connection, index) => {
+    const status = document.querySelector(`.transmission-card[data-index="${index}"] [data-status]`);
+    if (!status) return;
+    status.textContent = connection.connected
+      ? `在线 · ${connection.torrent_count || 0} 个任务`
+      : `连接失败：${connection.error || "未连接"}`;
+    status.classList.toggle("is-online", Boolean(connection.connected));
+    status.classList.toggle("is-error", !connection.connected);
+  });
   $("#large-directory-count").textContent = result.large_directories_total || 0;
   const warnings = result.warnings || [];
   $("#scan-notice").classList.toggle("is-error", warnings.length > 0);
@@ -300,6 +391,7 @@ function renderResults() {
     state.jobStatus === "completed" ? "扫描结束。" : state.jobStatus === "cancelled" ? "分析已停止，以下为已读取的部分结果，不代表完整扫描。" : state.jobStatus === "cancelling" ? "正在停止分析，以下为已读取的部分结果。" : state.jobStatus === "failed" ? "扫描中断，以下为已读取的部分结果。" : "正在扫描：结果持续更新，文件夹大小为当前已读累计值，尚未扫描的内容未计入。",
     `已读取 ${result.scanned_files ?? "未知"} 个普通文件；列出大小 ≥ ${result.settings.large_file_mb} MiB 的 ${result.large_files_total} 个文件，硬链接 ${result.hardlink_groups_total} 组。`,
     `达到阈值的文件夹 ${result.large_directories_total || 0} 个（含多层子目录）。`,
+    `Transmission：${(result.transmission_connections || []).filter((row) => row.connected).length} / ${(result.transmission_connections || []).length} 个连接在线，符合条件的清理候选 ${result.transmission_candidates_total || 0} 个。`,
     result.scope || "",
     identityText(result.identity),
     warnings.length ? `结果不完整：共 ${warnings.length} 条错误/警告，请展开错误详情查看原因（不一定是权限问题）。` : "",
@@ -333,7 +425,17 @@ function renderActiveTable() {
     return;
   }
   let html = "";
-  if (state.activeTab === "large-directories") {
+  if (state.activeTab === "transmission") {
+    const allRows = state.result.transmission_candidates || [];
+    const rows = filteredRows(allRows, search, (row) => `${row.server_name} ${row.task_name} ${row.dsm_path} ${(row.hardlink_paths || []).join(" ")}`.toLowerCase());
+    const cleaned = new Set(state.result.transmission_cleaned_ids || []);
+    html = tableOrEmpty(rows, `
+      <table><thead><tr><th></th><th>Transmission 任务</th><th>单文件</th><th>匹配路径 / 硬链接</th><th class="number-cell">大小 / 年龄</th><th>操作</th></tr></thead><tbody>
+      ${rows.map((row) => `<tr><td><input class="cleanup-checkbox" type="checkbox" data-cleanup-select="${escapeHtml(row.id)}" ${state.selectedTransmissionIds.has(row.id) ? "checked" : ""} ${cleaned.has(row.id) ? "disabled" : ""}></td><td><span class="volume-pill">${escapeHtml(row.server_name)}</span><br>${escapeHtml(row.task_name || "未命名任务")}<br><small>${escapeHtml(row.completed_at || "")}</small></td><td class="path-cell">${escapeHtml(row.file_name || "")}</td><td class="cleanup-paths"><strong>${escapeHtml(row.dsm_path || "")}</strong>${(row.hardlink_paths || []).map((path) => `<small>${escapeHtml(path)}</small>`).join("")}</td><td class="number-cell">${formatBytes(row.size_bytes)}<br>${row.age_days} 天前</td><td>${cleaned.has(row.id) ? `<span class="cleanup-done">已处理</span>` : ""}</td></tr>`).join("")}
+      </tbody></table>`;
+    const selected = [...state.selectedTransmissionIds].filter((id) => !cleaned.has(id));
+    if (selected.length) html += `<div class="result-toolbar"><span>已选择 ${selected.length} 项：将删除 TR 任务、下载文件及全部硬链接，并为每个文件创建 .rmed 标记。</span><button class="secondary-button cleanup-action" id="cleanup-selected" type="button">确认删除所选</button></div>`;
+  } else if (state.activeTab === "large-directories") {
     const rows = filteredRows(state.result.large_directories || [], search, (row) => row.path);
     html = tableOrEmpty(rows, `
       <table><thead><tr><th>存储空间</th><th>文件夹（含子目录）</th><th class="number-cell">累计逻辑大小</th><th class="number-cell">文件数</th></tr></thead><tbody>
@@ -374,6 +476,27 @@ $$('.tab').forEach((tab) => tab.addEventListener("click", () => {
 }));
 
 $("#result-search").addEventListener("input", () => { state.page = 1; renderActiveTable(); });
+$("#result-content").addEventListener("change", (event) => {
+  const checkbox = event.target.closest?.("[data-cleanup-select]");
+  if (!checkbox) return;
+  if (checkbox.checked) state.selectedTransmissionIds.add(checkbox.dataset.cleanupSelect);
+  else state.selectedTransmissionIds.delete(checkbox.dataset.cleanupSelect);
+  renderActiveTable();
+});
+$("#result-content").addEventListener("click", async (event) => {
+  if (!event.target.closest?.("#cleanup-selected")) return;
+  const ids = [...state.selectedTransmissionIds];
+  if (!ids.length || !window.confirm(`确认删除 ${ids.length} 项？将删除 Transmission 任务、文件、全部硬链接，并创建 .rmed 标记。`)) return;
+  try {
+    const job = await api(`/api/jobs/${state.jobId}/cleanup`, {method: "POST", body: JSON.stringify({candidate_ids: ids, delete_files: true, delete_transmission_tasks: true, create_rmed: true})});
+    state.result = job.result;
+    state.selectedTransmissionIds.clear();
+    renderResults();
+    $("#transmission-message").textContent = (job.result.transmission_cleanup?.warnings || []).join("；") || "清理完成";
+  } catch (error) {
+    $("#transmission-message").textContent = `清理失败：${error.message}`;
+  }
+});
 $("#previous-page").addEventListener("click", () => { state.page = Math.max(1, state.page - 1); renderActiveTable(); });
 $("#next-page").addEventListener("click", () => { state.page += 1; renderActiveTable(); });
 
