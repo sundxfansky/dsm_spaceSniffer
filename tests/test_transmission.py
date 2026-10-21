@@ -150,6 +150,29 @@ def test_oversized_response_is_reported_instead_of_invalid_json(monkeypatch):
         raise AssertionError("oversized response must be rejected")
 
 
+def test_dsm_directory_is_mapped_to_only_the_entry_with_most_matches():
+    torrents = [{"id": n, "downloadDir": "/downloads/11TB", "files": [{"name": f"a{n}.mkv", "length": n}]} for n in range(1, 4)]
+    torrents += [{"id": 10, "downloadDir": "/downloads/7TB", "files": [{"name": "a1.mkv", "length": 1}]},
+                 {"id": 11, "downloadDir": "/downloads/13TB", "files": [{"name": "a2.mkv", "length": 2}]}]
+    locator = _locate(torrents, [("/volume3/11TB/a1.mkv", 1), ("/volume3/11TB/a2.mkv", 2), ("/volume3/11TB/a3.mkv", 3)])
+    assert locator.mappings(0) == [
+        {"tr_path": "/downloads/11TB", "dsm_path": "/volume3/11TB", "matched_files": 3},
+        {"tr_path": "/downloads/13TB", "dsm_path": None, "matched_files": 0},
+        {"tr_path": "/downloads/7TB", "dsm_path": None, "matched_files": 0},
+    ]
+
+
+def test_entry_that_loses_a_directory_falls_back_to_next_choice():
+    torrents = [{"id": n, "downloadDir": "/downloads/11TB", "files": [{"name": f"a{n}.mkv", "length": n}]} for n in range(1, 4)]
+    torrents += [{"id": 10, "downloadDir": "/downloads/7TB", "files": [{"name": "a1.mkv", "length": 1}]},
+                 {"id": 11, "downloadDir": "/downloads/7TB", "files": [{"name": "b.mkv", "length": 9}]}]
+    locator = _locate(torrents, [("/volume3/11TB/a1.mkv", 1), ("/volume3/11TB/a2.mkv", 2), ("/volume3/11TB/a3.mkv", 3),
+                                 ("/volume1/7TB/b.mkv", 9)])
+    located = locator.located(0)
+    assert located["11TB"]["dsm_path"] == "/volume3/11TB"
+    assert located["7TB"] == {"dsm_path": "/volume1/7TB", "matched_files": 1}
+
+
 def test_custom_download_root_per_server():
     torrents = [
         {"id": 1, "downloadDir": "/data/tr/movies", "files": [{"name": "a.mkv", "length": 10}]},

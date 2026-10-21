@@ -204,17 +204,25 @@ class PathLocator:
 
     def located(self, server_index: int) -> dict[str, dict[str, Any]]:
         """Return entry -> {"dsm_path", "matched_files"} decided by file votes so far."""
-        result = {}
+        # A DSM directory is mapped to at most one entry. Pairs are assigned
+        # greedily by match count, so the entry with the most matching files
+        # claims a directory and the others fall back to their next choice.
+        # Ties prefer a DSM folder with the same name, then one outside the
+        # hardlinked “电视剧” library, then the shallower path.
+        pairs = []
         for entry in self._entries[server_index] if server_index < len(self._entries) else []:
-            counts = self._votes.get((server_index, entry))
-            if not counts:
+            for directory, count in self._votes.get((server_index, entry), {}).items():
+                key = (count, bool(entry) and posixpath.basename(directory) == entry,
+                       "电视剧" not in directory, -directory.count("/"), directory, entry)
+                pairs.append((key, entry, directory, count))
+        pairs.sort(key=lambda item: item[0], reverse=True)
+        result: dict[str, dict[str, Any]] = {}
+        claimed: set[str] = set()
+        for _, entry, directory, count in pairs:
+            if entry in result or directory in claimed:
                 continue
-            # Most matching files wins; ties prefer a DSM folder with the same
-            # name, then one outside the hardlinked “电视剧” library, then the
-            # shallower path, so the choice is deterministic.
-            directory = max(counts, key=lambda item: (counts[item], bool(entry) and posixpath.basename(item) == entry,
-                                                      "电视剧" not in item, -item.count("/"), item))
-            result[entry] = {"dsm_path": directory, "matched_files": counts[directory]}
+            result[entry] = {"dsm_path": directory, "matched_files": count}
+            claimed.add(directory)
         return result
 
     def mappings(self, server_index: int) -> list[dict[str, Any]]:
