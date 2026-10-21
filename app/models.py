@@ -1,3 +1,4 @@
+import posixpath
 from typing import Annotated, Literal
 
 from pydantic import BaseModel, Field, field_validator
@@ -43,6 +44,8 @@ class TransmissionServer(BaseModel):
     username: str = Field(default="", max_length=128)
     password: str = Field(default="", max_length=1024)
     rpc_path: str = Field(default="/transmission/rpc", max_length=256)
+    # Transmission-side directory whose first-level entries are located on DSM.
+    download_root: str = Field(default="/downloads", max_length=4096)
     enabled: bool = True
 
     @field_validator("name", "address", "rpc_path")
@@ -52,6 +55,14 @@ class TransmissionServer(BaseModel):
         if not value:
             raise ValueError("不能为空")
         return value
+
+    @field_validator("download_root")
+    @classmethod
+    def absolute_root(cls, value: str) -> str:
+        value = value.strip() or "/downloads"
+        if not value.startswith("/"):
+            raise ValueError("下载根目录必须以 / 开头")
+        return posixpath.normpath(value)
 
 
 VolumePath = Annotated[str, Field(pattern=r"^/volume[0-9]+$")]

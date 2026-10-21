@@ -45,9 +45,16 @@ def test_analysis_discovers_transmission_download_paths_from_scan(monkeypatch):
     monkeypatch.setattr(synology, "file_scan_command", lambda *_: "scan")
     req = AnalysisRequest(address="nas", username="u", password="p", volumes=["/volume1"],
                           transmission_servers=[TransmissionServer(address="tr")])
-    result = synology.analyze(req, lambda *_: None)
+    published = []
+    clock = iter(range(0, 10000, 3))
+    monkeypatch.setattr(synology.time, "monotonic", lambda: next(clock))
+    result = synology.analyze(req, lambda *_: None, published.append)
     connection = result["transmission_connections"][0]
     assert connection["path_mappings"] == [{"tr_path": "/downloads/tv", "dsm_path": "/volume1/share/tv", "matched_files": 1}]
+    assert connection["mappings_final"] and connection["download_root"] == "/downloads"
+    live = [snap["transmission_connections"][0] for snap in published if snap["transmission_connections"]]
+    assert live[0]["path_mappings"][0]["dsm_path"] is None and not live[0]["mappings_final"]
+    assert any(row["path_mappings"][0]["dsm_path"] == "/volume1/share/tv" and not row["mappings_final"] for row in live)
     assert [row["dsm_path"] for row in result["transmission_candidates"]] == ["/volume1/share/tv/ep1.mkv"]
     assert result["complete"]
 

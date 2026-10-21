@@ -125,28 +125,29 @@ class TransmissionClient:
         self.call("torrent-remove", {"ids": [torrent_id], "delete-local-data": delete_local_data})
 
 
-# Only tasks below this Transmission directory are matched. Each first-level
-# entry (/downloads/<name>) is located on DSM independently, because the
-# entries may be mounted from different shared folders.
+# Only tasks below the server's download root are matched. Each first-level
+# entry (<root>/<name>) is located on DSM independently, because the entries
+# may be mounted from different shared folders.
 DOWNLOAD_ROOT = "/downloads"
 MAX_MATCHES_PER_NAME = 64
 
 
-def _download_files(torrent: dict[str, Any]) -> list[tuple[str, str, int]]:
-    """Return (first-level entry, path inside that entry, size) for files under /downloads.
+def _download_files(torrent: dict[str, Any], download_root: str = DOWNLOAD_ROOT) -> list[tuple[str, str, int]]:
+    """Return (first-level entry, path inside that entry, size) for files under download_root.
 
-    Files placed directly in /downloads use "" as their entry.
+    Files placed directly in the root use "" as their entry.
     """
     root = posixpath.normpath(str(torrent.get("downloadDir") or "/"))
+    prefix = download_root.rstrip("/") + "/"
     rows = []
     for file_info in torrent.get("files") or []:
         name = str(file_info.get("name") or "")
         if not name:
             continue
         full = posixpath.normpath(posixpath.join(root, name))
-        if not full.startswith(DOWNLOAD_ROOT + "/"):
+        if not full.startswith(prefix):
             continue
-        relative = full[len(DOWNLOAD_ROOT) + 1:]
+        relative = full[len(prefix):]
         entry, _, inner = relative.partition("/")
         if not inner:
             entry, inner = "", relative
@@ -159,20 +160,28 @@ def _download_files(torrent: dict[str, Any]) -> list[tuple[str, str, int]]:
 
 
 class PathLocator:
-    """Finds where Transmission's /downloads entries live on DSM.
+    """Finds where Transmission's download-root entries live on DSM.
 
     The file scan feeds every DSM file through add(); only files whose trailing
     path and size match a Transmission file are kept, so memory stays bounded
     by the task list rather than by the volume size.
     """
 
-    def __init__(self, torrent_lists: list[list[dict[str, Any]] | None]) -> None:
-        self._wanted: dict[str, set[int]] = {}
-        for torrents in torrent_lists:
+    def __init__(self, torrent_lists: list[list[dict[str, Any]] | None], download_roots: list[str] | None = None) -> None:
+        self._roots = [download_roots[index] if download_roots else DOWNLOAD_ROOT for index in range(len(torrent_lists))]
+        # inner path -> (server index, entry, size) for every Transmission file.
+        self._wanted: dict[str, list[tuple[int, str, int]]] = {}
+        self._entries: list[list[str]] = []
+        for index, torrents in enumerate(torrent_lists):
+            entries = set()
             for torrent in torrents or []:
-                for _, inner, size in _download_files(torrent):
-                    self._wanted.setdefault(inner, set()).add(size)
-        self._found: dict[str, list[tuple[str, int]]] = {}
+                for entry, inner, size in _download_files(torrent, self._roots[index]):
+                    self._wanted.setdefault(inner, []).append((index, entry, size))
+                    entries.add(entry)
+            self._entries.append(sorted(entries))
+        # Votes are counted as files arrive so live snapshots stay cheap.
+        self._votes: dict[tuple[int, str], dict[str, int]] = {}
+        self._hits: dict[str, int] = {}
 
     def add(self, path: str, size: int) -> None:
         if not self._wanted:
@@ -180,33 +189,43 @@ class PathLocator:
         index = path.find("/", 1)
         while index != -1:
             inner = path[index + 1:]
-            sizes = self._wanted.get(inner)
-            if sizes and size in sizes:
-                rows = self._found.setdefault(inner, [])
-                if len(rows) < MAX_MATCHES_PER_NAME:
-                    rows.append((path, size))
+            wanted = self._wanted.get(inner)
+            if wanted and self._hits.get(inner, 0) < MAX_MATCHES_PER_NAME:
+                directory = path[:index]
+                matched = False
+                for server_index, entry, wanted_size in wanted:
+                    if wanted_size == size:
+                        counts = self._votes.setdefault((server_index, entry), {})
+                        counts[directory] = counts.get(directory, 0) + 1
+                        matched = True
+                if matched:
+                    self._hits[inner] = self._hits.get(inner, 0) + 1
             index = path.find("/", index + 1)
 
-    def locate(self, torrents: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
-        """Return entry -> {"dsm_path", "matched_files"} decided by file votes."""
-        votes: dict[str, dict[str, int]] = {}
-        for torrent in torrents:
-            for entry, inner, size in _download_files(torrent):
-                for path, found_size in self._found.get(inner, []):
-                    if found_size == size:
-                        directory = path[: -(len(inner) + 1)]
-                        if directory:
-                            counts = votes.setdefault(entry, {})
-                            counts[directory] = counts.get(directory, 0) + 1
-        located = {}
-        for entry, counts in votes.items():
+    def located(self, server_index: int) -> dict[str, dict[str, Any]]:
+        """Return entry -> {"dsm_path", "matched_files"} decided by file votes so far."""
+        result = {}
+        for entry in self._entries[server_index] if server_index < len(self._entries) else []:
+            counts = self._votes.get((server_index, entry))
+            if not counts:
+                continue
             # Most matching files wins; ties prefer a DSM folder with the same
             # name, then one outside the hardlinked “电视剧” library, then the
             # shallower path, so the choice is deterministic.
             directory = max(counts, key=lambda item: (counts[item], bool(entry) and posixpath.basename(item) == entry,
                                                       "电视剧" not in item, -item.count("/"), item))
-            located[entry] = {"dsm_path": directory, "matched_files": counts[directory]}
-        return located
+            result[entry] = {"dsm_path": directory, "matched_files": counts[directory]}
+        return result
+
+    def mappings(self, server_index: int) -> list[dict[str, Any]]:
+        """Return one row per first-level entry; dsm_path is None until found."""
+        root = self._roots[server_index] if server_index < len(self._roots) else DOWNLOAD_ROOT
+        located = self.located(server_index)
+        rows = []
+        for entry in self._entries[server_index] if server_index < len(self._entries) else []:
+            tr_path = posixpath.join(root, entry) if entry else root
+            rows.append({"tr_path": tr_path, **located.get(entry, {"dsm_path": None, "matched_files": 0})})
+        return rows
 
 
 def load_torrents(servers: list[TransmissionServer]) -> tuple[list[dict[str, Any]], list[list[dict[str, Any]] | None], list[str]]:
@@ -262,15 +281,8 @@ def find_candidates(
         if torrents is None:
             all_mappings.append([])
             continue
-        located = locator.locate(torrents)
-        entries = sorted({entry for torrent in torrents for entry, _, _ in _download_files(torrent)})
-        mappings = []
-        for entry in entries:
-            tr_path = posixpath.join(DOWNLOAD_ROOT, entry) if entry else DOWNLOAD_ROOT
-            if entry in located:
-                mappings.append({"tr_path": tr_path, **located[entry]})
-            else:
-                mappings.append({"tr_path": tr_path, "dsm_path": None, "matched_files": 0})
+        located = locator.located(index)
+        mappings = locator.mappings(index)
         missing = [row["tr_path"] for row in mappings if not row["dsm_path"]]
         if missing:
             preview = "、".join(missing[:5]) + (f" 等 {len(missing)} 个" if len(missing) > 5 else "")
@@ -289,7 +301,7 @@ def find_candidates(
                 except (TypeError, ValueError):
                     continue
             file_info = files[0]
-            located_files = _download_files(torrent)
+            located_files = _download_files(torrent, server.download_root)
             if len(located_files) != 1 or torrent.get("id") is None:
                 continue
             entry, inner, size = located_files[0]

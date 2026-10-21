@@ -306,7 +306,6 @@ def analyze(
         transmission_connections: list[dict] = []
         transmission_candidates: list[dict] = []
         transmission_warnings: list[str] = []
-        transmission_mappings: list[list[dict]] = []
         torrent_lists: list[list[dict] | None] = []
         locator: PathLocator | None = None
         scanned_files = 0
@@ -334,9 +333,12 @@ def analyze(
                 "large_files_total": len(large_files),
                 "hardlinks": sorted(hardlinks, key=lambda row: row["shared_bytes"], reverse=True),
                 "hardlink_groups_total": len(hardlinks),
-                # path_mappings appear only once the scan has located them.
+                # Mappings are published live while the scan runs; the page
+                # treats unfound entries as final only after the scan ends.
                 "transmission_connections": [
-                    {**row, "path_mappings": transmission_mappings[index]} if index < len(transmission_mappings) else dict(row)
+                    {**row, "download_root": request.transmission_servers[index].download_root,
+                     "path_mappings": locator.mappings(index), "mappings_final": finished}
+                    if locator is not None and row.get("connected") else dict(row)
                     for index, row in enumerate(transmission_connections)
                 ],
                 "transmission_candidates": list(transmission_candidates),
@@ -365,7 +367,7 @@ def analyze(
             progress(3, "读取 Transmission 任务列表")
             transmission_connections, torrent_lists, transmission_warnings = load_torrents(request.transmission_servers)
             warnings.extend(transmission_warnings)
-            locator = PathLocator(torrent_lists)
+            locator = PathLocator(torrent_lists, [server.download_root for server in request.transmission_servers])
         emit(True)
 
         def read_scan(command: str, label: str) -> str:
@@ -464,7 +466,7 @@ def analyze(
         if locator is not None:
             progress(98, "定位 Transmission 下载目录并匹配硬链接")
             hardlinks = [group for volume, rows in linked_files.items() for group in group_hardlinks(rows, volume)]
-            transmission_mappings, transmission_candidates, match_warnings = find_candidates(
+            _, transmission_candidates, match_warnings = find_candidates(
                 request.transmission_servers,
                 torrent_lists,
                 locator,

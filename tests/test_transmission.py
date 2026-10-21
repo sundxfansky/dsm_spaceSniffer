@@ -5,8 +5,8 @@ from app.synology import cleanup_candidates
 from app.transmission import PathLocator, find_candidates, load_torrents
 
 
-def _locate(torrents, dsm_files):
-    locator = PathLocator([torrents])
+def _locate(torrents, dsm_files, root="/downloads"):
+    locator = PathLocator([torrents], [root])
     for path, size in dsm_files:
         locator.add(path, size)
     return locator
@@ -54,7 +54,7 @@ def test_each_first_level_download_entry_is_located_independently():
         # Same name, different size: must not vote.
         ("/volume2/backup/movies/a.mkv", 11),
     ])
-    located = locator.locate(torrents)
+    located = locator.located(0)
     assert located == {
         "movies": {"dsm_path": "/volume1/video/movies", "matched_files": 2},
         "series": {"dsm_path": "/volume2/tv-share/series", "matched_files": 1},
@@ -70,13 +70,13 @@ def test_majority_of_matching_files_decides_location():
         ("/volume1/downloads/tv/e2.mkv", 2),
         ("/volume1/downloads/tv/e3.mkv", 3),
     ])
-    assert locator.locate(torrents)["tv"]["dsm_path"] == "/volume1/downloads/tv"
+    assert locator.located(0)["tv"]["dsm_path"] == "/volume1/downloads/tv"
 
 
 def test_tie_prefers_folder_named_like_entry_outside_television_library():
     torrents = [{"id": 1, "downloadDir": "/downloads/tv", "files": [{"name": "e1.mkv", "length": 1}]}]
     locator = _locate(torrents, [("/volume1/电视剧/e1.mkv", 1), ("/volume1/downloads/tv/e1.mkv", 1)])
-    assert locator.locate(torrents)["tv"]["dsm_path"] == "/volume1/downloads/tv"
+    assert locator.located(0)["tv"]["dsm_path"] == "/volume1/downloads/tv"
 
 
 def test_unlocated_entries_are_reported_and_skipped():
@@ -148,6 +148,36 @@ def test_oversized_response_is_reported_instead_of_invalid_json(monkeypatch):
         assert "超过" in str(exc)
     else:
         raise AssertionError("oversized response must be rejected")
+
+
+def test_custom_download_root_per_server():
+    torrents = [
+        {"id": 1, "downloadDir": "/data/tr/movies", "files": [{"name": "a.mkv", "length": 10}]},
+        {"id": 2, "downloadDir": "/downloads/tv", "files": [{"name": "b.mkv", "length": 20}]},
+    ]
+    locator = _locate(torrents, [("/volume1/m/movies/a.mkv", 10), ("/volume1/t/tv/b.mkv", 20)], root="/data/tr")
+    assert locator.mappings(0) == [{"tr_path": "/data/tr/movies", "dsm_path": "/volume1/m/movies", "matched_files": 1}]
+
+
+def test_download_root_defaults_and_validation():
+    assert TransmissionServer(address="tr").download_root == "/downloads"
+    assert TransmissionServer(address="tr", download_root=" /data/tr/ ").download_root == "/data/tr"
+    assert TransmissionServer(address="tr", download_root="").download_root == "/downloads"
+    try:
+        TransmissionServer(address="tr", download_root="data")
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("relative root must be rejected")
+
+
+def test_mappings_are_available_before_scan_finishes():
+    torrents = [{"id": 1, "downloadDir": "/downloads/a", "files": [{"name": "x.mkv", "length": 1}]},
+                {"id": 2, "downloadDir": "/downloads/b", "files": [{"name": "y.mkv", "length": 2}]}]
+    locator = PathLocator([torrents], ["/downloads"])
+    assert [row["dsm_path"] for row in locator.mappings(0)] == [None, None]
+    locator.add("/volume1/s/a/x.mkv", 1)
+    assert [row["dsm_path"] for row in locator.mappings(0)] == ["/volume1/s/a", None]
 
 
 def test_legacy_mapping_fields_are_ignored():

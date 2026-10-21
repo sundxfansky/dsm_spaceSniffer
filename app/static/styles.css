@@ -88,6 +88,7 @@ input:focus { border-color: var(--blue); box-shadow: 0 0 0 3px rgb(23 105 170 / 
 .transmission-card .field > span { font-size: 11px; }
 .transmission-card .field input { height: 36px; }
 .transmission-card .remove-transmission { height: 36px; padding: 0 10px; color: var(--danger); border-color: #d7aaaa; }
+.transmission-card .field:has([data-key="download_root"]) { grid-column: span 2; }
 .transmission-status { grid-column: 1 / -1; min-height: 18px; color: var(--muted); font-size: 12px; }
 .transmission-status::before { content: ""; display: inline-block; width: 8px; height: 8px; margin-right: 7px; border-radius: 50%; background: #a8b2ba; }
 .transmission-status.is-online { color: #26745f; }
@@ -96,7 +97,9 @@ input:focus { border-color: var(--blue); box-shadow: 0 0 0 3px rgb(23 105 170 / 
 .transmission-status.is-error::before { background: var(--danger); }
 .transmission-mappings { grid-column: 1 / -1; display: flex; flex-direction: column; gap: 3px; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
 .transmission-mappings small { margin-left: 6px; color: var(--muted); }
+.transmission-mappings strong { color: var(--ink, inherit); font-weight: 600; }
 .transmission-mappings .is-missing { color: var(--danger); }
+.transmission-mappings .is-pending { color: var(--muted); font-style: italic; }
 .transmission-actions { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-top: 12px; }
 .transmission-actions .inline-message { flex: 1; margin: 0; }
 .cleanup-checkbox { width: 17px; height: 17px; accent-color: var(--blue); }

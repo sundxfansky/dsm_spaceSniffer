@@ -128,9 +128,25 @@ function transmissionTemplate(server, index) {
     <button type="button" class="secondary-button remove-transmission" data-remove="${index}">移除</button>
     <label class="field"><span>账户（可选）</span><input data-key="username" value="${value("username")}" autocomplete="username"></label>
     <label class="field"><span>密码（可选）</span><input data-key="password" type="password" value="${value("password")}" autocomplete="current-password"></label>
+    <label class="field"><span>TR 下载根目录</span><input data-key="download_root" value="${escapeHtml(server.download_root || "/downloads")}" placeholder="/downloads"></label>
     <div class="transmission-status" data-status>${server.statusText || "未测试连接"}</div>
-    <div class="transmission-mappings" data-mappings>分析时自动在所选存储空间中查找 /downloads 下各一级目录对应的 DSM 路径</div>
+    <div class="transmission-mappings" data-mappings>${mappingsHtml({download_root: server.download_root})}</div>
   </div>`;
+}
+
+// Mappings arrive with every live snapshot; until the scan ends an unfound
+// entry only means it has not been matched yet.
+function mappingsHtml(connection) {
+  const root = escapeHtml(connection.download_root || "/downloads");
+  const rows = connection.path_mappings;
+  if (!rows) return `等待扫描，将在 ${root} 下各一级目录与 DSM 路径之间实时匹配`;
+  if (!rows.length) return `${root} 下没有任务`;
+  const final = Boolean(connection.mappings_final);
+  const found = rows.filter((row) => row.dsm_path).length;
+  const header = `<strong>当前挂载目录（${final ? "扫描完成" : "实时更新"}）：已定位 ${found} / ${rows.length}</strong>`;
+  return header + rows.map((row) => row.dsm_path
+    ? `<span>${escapeHtml(row.tr_path)} → ${escapeHtml(row.dsm_path)} <small>${row.matched_files} 个文件匹配</small></span>`
+    : `<span class="${final ? "is-missing" : "is-pending"}">${escapeHtml(row.tr_path)} → ${final ? "未找到" : "查找中…"}</span>`).join("");
 }
 
 function renderTransmissionServers() {
@@ -169,7 +185,7 @@ async function testTransmission(index) {
 
 $("#add-transmission").addEventListener("click", () => {
   state.transmissionServers = readTransmissionServers();
-  state.transmissionServers.push({name: `Transmission ${state.transmissionServers.length + 1}`, address: "", port: 9091, username: "", password: "", rpc_path: "/transmission/rpc", enabled: true});
+  state.transmissionServers.push({name: `Transmission ${state.transmissionServers.length + 1}`, address: "", port: 9091, username: "", password: "", rpc_path: "/transmission/rpc", download_root: "/downloads", enabled: true});
   renderTransmissionServers();
 });
 
@@ -383,16 +399,7 @@ function renderResults() {
     status.classList.toggle("is-online", Boolean(connection.connected));
     status.classList.toggle("is-error", !connection.connected);
     const mappings = status.parentElement.querySelector("[data-mappings]");
-    const rows = connection.path_mappings;
-    if (mappings && connection.connected) {
-      mappings.innerHTML = !rows
-        ? "扫描中，完成后显示 /downloads 一级目录对应的 DSM 路径"
-        : rows.length
-          ? rows.map((row) => row.dsm_path
-            ? `<span>${escapeHtml(row.tr_path)} → ${escapeHtml(row.dsm_path)} <small>${row.matched_files} 个文件匹配</small></span>`
-            : `<span class="is-missing">${escapeHtml(row.tr_path)} → 未找到</span>`).join("")
-          : "/downloads 下没有任务";
-    }
+    if (mappings && connection.connected) mappings.innerHTML = mappingsHtml(connection);
   });
   $("#large-directory-count").textContent = result.large_directories_total || 0;
   const warnings = result.warnings || [];
