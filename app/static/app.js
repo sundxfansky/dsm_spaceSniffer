@@ -432,7 +432,7 @@ function renderActiveTable() {
     html = tableOrEmpty(rows, `
       <table><thead><tr><th></th><th>Transmission 任务</th><th>单文件</th><th>匹配路径 / 硬链接</th><th class="number-cell">大小 / 年龄</th><th>操作</th></tr></thead><tbody>
       ${rows.map((row) => `<tr><td><input class="cleanup-checkbox" type="checkbox" data-cleanup-select="${escapeHtml(row.id)}" ${state.selectedTransmissionIds.has(row.id) ? "checked" : ""} ${cleaned.has(row.id) ? "disabled" : ""}></td><td><span class="volume-pill">${escapeHtml(row.server_name)}</span><br>${escapeHtml(row.task_name || "未命名任务")}<br><small>${escapeHtml(row.completed_at || "")}</small></td><td class="path-cell">${escapeHtml(row.file_name || "")}</td><td class="cleanup-paths"><strong>${escapeHtml(row.dsm_path || "")}</strong>${(row.hardlink_paths || []).map((path) => `<small>${escapeHtml(path)}</small>`).join("")}</td><td class="number-cell">${formatBytes(row.size_bytes)}<br>${row.age_days} 天前</td><td>${cleaned.has(row.id) ? `<span class="cleanup-done">已处理</span>` : ""}</td></tr>`).join("")}
-      </tbody></table>`;
+      </tbody></table>`);
     const selected = [...state.selectedTransmissionIds].filter((id) => !cleaned.has(id));
     if (selected.length) html += `<div class="result-toolbar"><span>已选择 ${selected.length} 项：将删除 TR 任务、下载文件及全部硬链接，并为每个文件创建 .rmed 标记。</span><button class="secondary-button cleanup-action" id="cleanup-selected" type="button">确认删除所选</button></div>`;
   } else if (state.activeTab === "large-directories") {
