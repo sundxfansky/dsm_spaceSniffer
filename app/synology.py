@@ -16,7 +16,7 @@ from urllib.parse import urlparse
 import paramiko
 
 from .models import AnalysisRequest, Credentials, VolumeInfo
-from .transmission import TransmissionClient, TransmissionError, find_candidates
+from .transmission import PathLocator, TransmissionClient, TransmissionError, find_candidates, load_torrents
 
 
 VOLUME_PATTERN = re.compile(r"^/volume[0-9]+$")
@@ -306,6 +306,9 @@ def analyze(
         transmission_connections: list[dict] = []
         transmission_candidates: list[dict] = []
         transmission_warnings: list[str] = []
+        transmission_mappings: list[list[dict]] = []
+        torrent_lists: list[list[dict] | None] = []
+        locator: PathLocator | None = None
         scanned_files = 0
         total_steps = len(request.volumes) * 2
         completed_steps = 0
@@ -331,7 +334,11 @@ def analyze(
                 "large_files_total": len(large_files),
                 "hardlinks": sorted(hardlinks, key=lambda row: row["shared_bytes"], reverse=True),
                 "hardlink_groups_total": len(hardlinks),
-                "transmission_connections": list(transmission_connections),
+                # path_mappings appear only once the scan has located them.
+                "transmission_connections": [
+                    {**row, "path_mappings": transmission_mappings[index]} if index < len(transmission_mappings) else dict(row)
+                    for index, row in enumerate(transmission_connections)
+                ],
                 "transmission_candidates": list(transmission_candidates),
                 "transmission_candidates_total": len(transmission_candidates),
                 "transmission_warnings": list(transmission_warnings),
@@ -352,6 +359,13 @@ def analyze(
                 publish(snapshot())
                 last_publish = now
 
+        if request.transmission_servers:
+            # Task lists are read first so the file scan can locate each
+            # /download entry on DSM without the user configuring a mapping.
+            progress(3, "读取 Transmission 任务列表")
+            transmission_connections, torrent_lists, transmission_warnings = load_torrents(request.transmission_servers)
+            warnings.extend(transmission_warnings)
+            locator = PathLocator(torrent_lists)
         emit(True)
 
         def read_scan(command: str, label: str) -> str:
@@ -386,6 +400,8 @@ def analyze(
                         row["volume"] = volume
                         if on_file is not None:
                             on_file(row)
+                        if locator is not None:
+                            locator.add(row["path"], row["size_bytes"])
                         scanned_files += 1
                         volume_count += 1
                         if row["size_bytes"] >= threshold:
@@ -445,16 +461,19 @@ def analyze(
 
         progress(97, "整理分析结果")
         check_cancelled(cancel_event)
-        if request.transmission_servers:
-            progress(98, "读取 Transmission 任务并匹配硬链接")
+        if locator is not None:
+            progress(98, "定位 Transmission 下载目录并匹配硬链接")
             hardlinks = [group for volume, rows in linked_files.items() for group in group_hardlinks(rows, volume)]
-            transmission_connections, transmission_candidates, transmission_warnings = find_candidates(
+            transmission_mappings, transmission_candidates, match_warnings = find_candidates(
                 request.transmission_servers,
+                torrent_lists,
+                locator,
                 hardlinks,
                 request.transmission_max_file_mb,
                 request.transmission_age_days,
             )
-            warnings.extend(transmission_warnings)
+            transmission_warnings.extend(match_warnings)
+            warnings.extend(match_warnings)
         return snapshot(finished=True)
     finally:
         session.close()

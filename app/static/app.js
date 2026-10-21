@@ -125,12 +125,11 @@ function transmissionTemplate(server, index) {
     <label class="field"><span>名称</span><input data-key="name" value="${value("name")}" placeholder="客厅 TR"></label>
     <label class="field"><span>RPC 地址</span><input data-key="address" value="${value("address")}" placeholder="http://tr.local"></label>
     <label class="field"><span>端口</span><input data-key="port" type="number" min="1" max="65535" value="${value("port")}"></label>
-    <label class="field"><span>TR 挂载路径</span><input data-key="mount_path" value="${value("mount_path")}" placeholder="/downloads"></label>
-    <label class="field"><span>DSM 对应路径</span><input data-key="local_path" value="${value("local_path")}" placeholder="/volume1/downloads"></label>
     <button type="button" class="secondary-button remove-transmission" data-remove="${index}">移除</button>
     <label class="field"><span>账户（可选）</span><input data-key="username" value="${value("username")}" autocomplete="username"></label>
     <label class="field"><span>密码（可选）</span><input data-key="password" type="password" value="${value("password")}" autocomplete="current-password"></label>
     <div class="transmission-status" data-status>${server.statusText || "未测试连接"}</div>
+    <div class="transmission-mappings" data-mappings>分析时自动在所选存储空间中查找 /download 下各一级目录对应的 DSM 路径</div>
   </div>`;
 }
 
@@ -170,7 +169,7 @@ async function testTransmission(index) {
 
 $("#add-transmission").addEventListener("click", () => {
   state.transmissionServers = readTransmissionServers();
-  state.transmissionServers.push({name: `Transmission ${state.transmissionServers.length + 1}`, address: "", port: 9091, username: "", password: "", rpc_path: "/transmission/rpc", mount_path: "/downloads", local_path: "/volume1/downloads", enabled: true});
+  state.transmissionServers.push({name: `Transmission ${state.transmissionServers.length + 1}`, address: "", port: 9091, username: "", password: "", rpc_path: "/transmission/rpc", enabled: true});
   renderTransmissionServers();
 });
 
@@ -383,6 +382,17 @@ function renderResults() {
       : `连接失败：${connection.error || "未连接"}`;
     status.classList.toggle("is-online", Boolean(connection.connected));
     status.classList.toggle("is-error", !connection.connected);
+    const mappings = status.parentElement.querySelector("[data-mappings]");
+    const rows = connection.path_mappings;
+    if (mappings && connection.connected) {
+      mappings.innerHTML = !rows
+        ? "扫描中，完成后显示 /download 一级目录对应的 DSM 路径"
+        : rows.length
+          ? rows.map((row) => row.dsm_path
+            ? `<span>${escapeHtml(row.tr_path)} → ${escapeHtml(row.dsm_path)} <small>${row.matched_files} 个文件匹配</small></span>`
+            : `<span class="is-missing">${escapeHtml(row.tr_path)} → 未找到</span>`).join("")
+          : "/download 下没有任务";
+    }
   });
   $("#large-directory-count").textContent = result.large_directories_total || 0;
   const warnings = result.warnings || [];

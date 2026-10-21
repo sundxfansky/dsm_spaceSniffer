@@ -11,6 +11,47 @@ def request():
     return AnalysisRequest(address="test.invalid", username="test", password="test", volumes=["/volume1"], large_file_mb=1)
 
 
+def test_analysis_discovers_transmission_download_paths_from_scan(monkeypatch):
+    from datetime import UTC, datetime, timedelta
+
+    from app.models import TransmissionServer
+
+    volume = VolumeInfo(path="/volume1", filesystem="test", total_bytes=100, used_bytes=50, available_bytes=50, usage_percent=50)
+    old = int((datetime.now(UTC) - timedelta(days=40)).timestamp())
+    torrents = [{"id": 7, "name": "ep", "downloadDir": "/download/tv", "doneDate": old, "percentDone": 1,
+                 "files": [{"name": "ep1.mkv", "length": 100}]}]
+
+    class Client:
+        def __init__(self, _server):
+            self.url = "http://tr:9091/transmission/rpc"
+
+        def torrents(self):
+            return torrents
+
+    class Session:
+        host = "nas"
+        fingerprint = "test"
+        def close(self):
+            pass
+        def capture(self, command, on_chunk=None):
+            if on_chunk is None:
+                return "1024\t/volume1/share\n", "", 0
+            on_chunk("1\t5\t2\t100\t123\t/volume1/share/tv/ep1.mkv\0".encode())
+            on_chunk("1\t5\t2\t100\t123\t/volume1/电视剧/Show/ep1.mkv\0".encode())
+            return "", "", 0
+
+    monkeypatch.setattr("app.transmission.TransmissionClient", Client)
+    monkeypatch.setattr(synology, "discover", lambda _: (Session(), [volume]))
+    monkeypatch.setattr(synology, "file_scan_command", lambda *_: "scan")
+    req = AnalysisRequest(address="nas", username="u", password="p", volumes=["/volume1"],
+                          transmission_servers=[TransmissionServer(address="tr")])
+    result = synology.analyze(req, lambda *_: None)
+    connection = result["transmission_connections"][0]
+    assert connection["path_mappings"] == [{"tr_path": "/download/tv", "dsm_path": "/volume1/share/tv", "matched_files": 1}]
+    assert [row["dsm_path"] for row in result["transmission_candidates"]] == ["/volume1/share/tv/ep1.mkv"]
+    assert result["complete"]
+
+
 def test_live_nested_folders_small_files_split_utf8_and_immutable_snapshots(monkeypatch):
     published = []
     volume = VolumeInfo(path="/volume1", filesystem="test", total_bytes=100, used_bytes=50, available_bytes=50, usage_percent=50)

@@ -108,14 +108,111 @@ class TransmissionClient:
         self.call("torrent-remove", {"ids": [torrent_id], "delete-local-data": delete_local_data})
 
 
-def _mapped_path(server: TransmissionServer, torrent: dict[str, Any], filename: str) -> str | None:
-    remote_root = posixpath.normpath(str(torrent.get("downloadDir") or "/"))
-    remote = posixpath.normpath(posixpath.join(remote_root, filename))
-    mount = posixpath.normpath(server.mount_path)
-    if remote != mount and not remote.startswith(mount + "/"):
-        return None
-    suffix = remote[len(mount):].lstrip("/")
-    return posixpath.normpath(posixpath.join(server.local_path, suffix)) if suffix else server.local_path
+# Only tasks below this Transmission directory are matched. Each first-level
+# entry (/download/<name>) is located on DSM independently, because the
+# entries may be mounted from different shared folders.
+DOWNLOAD_ROOT = "/download"
+MAX_MATCHES_PER_NAME = 64
+
+
+def _download_files(torrent: dict[str, Any]) -> list[tuple[str, str, int]]:
+    """Return (first-level entry, path inside that entry, size) for files under /download.
+
+    Files placed directly in /download use "" as their entry.
+    """
+    root = posixpath.normpath(str(torrent.get("downloadDir") or "/"))
+    rows = []
+    for file_info in torrent.get("files") or []:
+        name = str(file_info.get("name") or "")
+        if not name:
+            continue
+        full = posixpath.normpath(posixpath.join(root, name))
+        if not full.startswith(DOWNLOAD_ROOT + "/"):
+            continue
+        relative = full[len(DOWNLOAD_ROOT) + 1:]
+        entry, _, inner = relative.partition("/")
+        if not inner:
+            entry, inner = "", relative
+        try:
+            size = int(file_info.get("length") or 0)
+        except (TypeError, ValueError):
+            continue
+        rows.append((entry, inner, size))
+    return rows
+
+
+class PathLocator:
+    """Finds where Transmission's /download entries live on DSM.
+
+    The file scan feeds every DSM file through add(); only files whose trailing
+    path and size match a Transmission file are kept, so memory stays bounded
+    by the task list rather than by the volume size.
+    """
+
+    def __init__(self, torrent_lists: list[list[dict[str, Any]] | None]) -> None:
+        self._wanted: dict[str, set[int]] = {}
+        for torrents in torrent_lists:
+            for torrent in torrents or []:
+                for _, inner, size in _download_files(torrent):
+                    self._wanted.setdefault(inner, set()).add(size)
+        self._found: dict[str, list[tuple[str, int]]] = {}
+
+    def add(self, path: str, size: int) -> None:
+        if not self._wanted:
+            return
+        index = path.find("/", 1)
+        while index != -1:
+            inner = path[index + 1:]
+            sizes = self._wanted.get(inner)
+            if sizes and size in sizes:
+                rows = self._found.setdefault(inner, [])
+                if len(rows) < MAX_MATCHES_PER_NAME:
+                    rows.append((path, size))
+            index = path.find("/", index + 1)
+
+    def locate(self, torrents: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+        """Return entry -> {"dsm_path", "matched_files"} decided by file votes."""
+        votes: dict[str, dict[str, int]] = {}
+        for torrent in torrents:
+            for entry, inner, size in _download_files(torrent):
+                for path, found_size in self._found.get(inner, []):
+                    if found_size == size:
+                        directory = path[: -(len(inner) + 1)]
+                        if directory:
+                            counts = votes.setdefault(entry, {})
+                            counts[directory] = counts.get(directory, 0) + 1
+        located = {}
+        for entry, counts in votes.items():
+            # Most matching files wins; ties prefer a DSM folder with the same
+            # name, then one outside the hardlinked “电视剧” library, then the
+            # shallower path, so the choice is deterministic.
+            directory = max(counts, key=lambda item: (counts[item], bool(entry) and posixpath.basename(item) == entry,
+                                                      "电视剧" not in item, -item.count("/"), item))
+            located[entry] = {"dsm_path": directory, "matched_files": counts[directory]}
+        return located
+
+
+def load_torrents(servers: list[TransmissionServer]) -> tuple[list[dict[str, Any]], list[list[dict[str, Any]] | None], list[str]]:
+    """Return connection summaries, task lists (None when unavailable) and warnings."""
+    connections: list[dict[str, Any]] = []
+    torrent_lists: list[list[dict[str, Any]] | None] = []
+    warnings: list[str] = []
+    for server in servers:
+        if not server.enabled:
+            connections.append({"name": server.name, "address": server.address, "connected": False, "disabled": True, "torrent_count": 0})
+            torrent_lists.append(None)
+            continue
+        try:
+            client = TransmissionClient(server)
+            torrents = client.torrents()
+        except (TransmissionError, ValueError) as exc:
+            warnings.append(f"Transmission「{server.name}」：{exc}")
+            connections.append({"name": server.name, "address": server.address, "connected": False, "torrent_count": 0, "error": str(exc)})
+            torrent_lists.append(None)
+            continue
+        connections.append({"name": server.name, "address": server.address, "connected": True, "torrent_count": len(torrents), "rpc_url": client.url})
+        torrent_lists.append(torrents)
+    return connections, torrent_lists, warnings
 
 
 def _age_timestamp(torrent: dict[str, Any]) -> int | None:
@@ -126,11 +223,13 @@ def _age_timestamp(torrent: dict[str, Any]) -> int | None:
 
 def find_candidates(
     servers: list[TransmissionServer],
+    torrent_lists: list[list[dict[str, Any]] | None],
+    locator: PathLocator,
     hardlinks: list[dict[str, Any]],
     max_file_mb: int = 1024,
     age_days: int = 30,
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[str]]:
-    """Return connection summaries, safe-to-display cleanup candidates, warnings."""
+) -> tuple[list[list[dict[str, Any]]], list[dict[str, Any]], list[str]]:
+    """Return discovered path mappings per server, cleanup candidates, warnings."""
     cutoff = int(datetime.now(UTC).timestamp()) - age_days * 86400
     max_bytes = max_file_mb * 1024 * 1024
     by_path: dict[str, list[dict[str, Any]]] = {}
@@ -138,21 +237,28 @@ def find_candidates(
         for path in group.get("paths", []):
             by_path.setdefault(path, []).append(group)
 
-    connections: list[dict[str, Any]] = []
+    all_mappings: list[list[dict[str, Any]]] = []
     candidates: list[dict[str, Any]] = []
     warnings: list[str] = []
     for index, server in enumerate(servers):
-        if not server.enabled:
-            connections.append({"name": server.name, "address": server.address, "connected": False, "disabled": True, "torrent_count": 0})
+        torrents = torrent_lists[index] if index < len(torrent_lists) else None
+        if torrents is None:
+            all_mappings.append([])
             continue
-        try:
-            client = TransmissionClient(server)
-            torrents = client.torrents()
-            connections.append({"name": server.name, "address": server.address, "connected": True, "torrent_count": len(torrents), "rpc_url": client.url})
-        except (TransmissionError, ValueError) as exc:
-            warnings.append(f"Transmission「{server.name}」：{exc}")
-            connections.append({"name": server.name, "address": server.address, "connected": False, "torrent_count": 0, "error": str(exc)})
-            continue
+        located = locator.locate(torrents)
+        entries = sorted({entry for torrent in torrents for entry, _, _ in _download_files(torrent)})
+        mappings = []
+        for entry in entries:
+            tr_path = posixpath.join(DOWNLOAD_ROOT, entry) if entry else DOWNLOAD_ROOT
+            if entry in located:
+                mappings.append({"tr_path": tr_path, **located[entry]})
+            else:
+                mappings.append({"tr_path": tr_path, "dsm_path": None, "matched_files": 0})
+        missing = [row["tr_path"] for row in mappings if not row["dsm_path"]]
+        if missing:
+            preview = "、".join(missing[:5]) + (f" 等 {len(missing)} 个" if len(missing) > 5 else "")
+            warnings.append(f"Transmission「{server.name}」：在所选存储空间中未找到 {preview} 对应的 DSM 路径，这些任务不参与匹配")
+        all_mappings.append(mappings)
         for torrent in torrents:
             timestamp = _age_timestamp(torrent)
             files = torrent.get("files") or []
@@ -166,17 +272,13 @@ def find_candidates(
                 except (TypeError, ValueError):
                     continue
             file_info = files[0]
-            try:
-                size = int(file_info.get("length") or 0)
-            except (TypeError, ValueError):
+            located_files = _download_files(torrent)
+            if len(located_files) != 1 or torrent.get("id") is None:
                 continue
-            if size > max_bytes:
+            entry, inner, size = located_files[0]
+            if size > max_bytes or entry not in located:
                 continue
-            if torrent.get("id") is None:
-                continue
-            mapped = _mapped_path(server, torrent, str(file_info.get("name") or ""))
-            if not mapped:
-                continue
+            mapped = posixpath.join(located[entry]["dsm_path"], inner)
             for group in by_path.get(mapped, []):
                 television_paths = [path for path in group.get("paths", []) if "电视剧" in posixpath.dirname(path)]
                 if not television_paths:
@@ -203,4 +305,4 @@ def find_candidates(
     # Multiple Transmission servers can report the same mounted task. Keep all
     # task actions but do not duplicate the exact candidate row within one task.
     unique: dict[str, dict[str, Any]] = {row["id"]: row for row in candidates}
-    return connections, list(unique.values()), warnings
+    return all_mappings, list(unique.values()), warnings
