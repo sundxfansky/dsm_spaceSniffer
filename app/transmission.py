@@ -19,6 +19,10 @@ class TransmissionError(RuntimeError):
     pass
 
 
+MAX_RESPONSE_BYTES = 64 * 1024 * 1024
+TORRENT_BATCH_SIZE = 200
+
+
 def _rpc_url(server: TransmissionServer) -> str:
     raw = server.address.strip()
     parsed = urlparse(raw if "://" in raw else f"http://{raw}:{server.port}")
@@ -69,7 +73,9 @@ class TransmissionClient:
             request = urllib.request.Request(self.url, payload, headers=self._headers(), method="POST")
             try:
                 with urllib.request.urlopen(request, timeout=self.timeout) as response:
-                    body = response.read(16 * 1024 * 1024)
+                    body = response.read(MAX_RESPONSE_BYTES + 1)
+                if len(body) > MAX_RESPONSE_BYTES:
+                    raise TransmissionError(f"Transmission 响应超过 {MAX_RESPONSE_BYTES // 1024 // 1024} MiB，已停止读取")
             except urllib.error.HTTPError as exc:
                 if exc.code == 409 and attempt == 0:
                     self.session_id = exc.headers.get("X-Transmission-Session-Id", "")
@@ -80,7 +86,7 @@ class TransmissionClient:
             except (urllib.error.URLError, TimeoutError, socket.timeout, OSError) as exc:
                 raise TransmissionError(f"无法连接 Transmission: {exc}") from exc
             try:
-                result = json.loads(body.decode("utf-8"))
+                result = json.loads(body.decode("utf-8", errors="replace"))
             except (UnicodeDecodeError, json.JSONDecodeError) as exc:
                 raise TransmissionError("Transmission 返回了无效 JSON") from exc
             if result.get("result") != "success":
@@ -101,24 +107,35 @@ class TransmissionClient:
         }
 
     def torrents(self) -> list[dict[str, Any]]:
+        # Large libraries return hundreds of MiB when every file list is
+        # requested at once, so list ids first and fetch details in batches.
+        ids = [row["id"] for row in self.call("torrent-get", {"fields": ["id"]}).get("torrents", []) if row.get("id") is not None]
         fields = ["id", "name", "hashString", "downloadDir", "files", "activityDate", "dateAdded", "doneDate", "status", "percentDone", "totalSize"]
-        return self.call("torrent-get", {"fields": fields}).get("torrents", [])
+        torrents = []
+        for start in range(0, len(ids), TORRENT_BATCH_SIZE):
+            batch = self.call("torrent-get", {"ids": ids[start:start + TORRENT_BATCH_SIZE], "fields": fields}).get("torrents", [])
+            for torrent in batch:
+                # Only name/length are used; dropping the rest keeps memory
+                # proportional to what matching needs.
+                torrent["files"] = [{"name": item.get("name"), "length": item.get("length")} for item in torrent.get("files") or []]
+                torrents.append(torrent)
+        return torrents
 
     def remove_torrent(self, torrent_id: int, delete_local_data: bool = False) -> None:
         self.call("torrent-remove", {"ids": [torrent_id], "delete-local-data": delete_local_data})
 
 
 # Only tasks below this Transmission directory are matched. Each first-level
-# entry (/download/<name>) is located on DSM independently, because the
+# entry (/downloads/<name>) is located on DSM independently, because the
 # entries may be mounted from different shared folders.
-DOWNLOAD_ROOT = "/download"
+DOWNLOAD_ROOT = "/downloads"
 MAX_MATCHES_PER_NAME = 64
 
 
 def _download_files(torrent: dict[str, Any]) -> list[tuple[str, str, int]]:
-    """Return (first-level entry, path inside that entry, size) for files under /download.
+    """Return (first-level entry, path inside that entry, size) for files under /downloads.
 
-    Files placed directly in /download use "" as their entry.
+    Files placed directly in /downloads use "" as their entry.
     """
     root = posixpath.normpath(str(torrent.get("downloadDir") or "/"))
     rows = []
@@ -142,7 +159,7 @@ def _download_files(torrent: dict[str, Any]) -> list[tuple[str, str, int]]:
 
 
 class PathLocator:
-    """Finds where Transmission's /download entries live on DSM.
+    """Finds where Transmission's /downloads entries live on DSM.
 
     The file scan feeds every DSM file through add(); only files whose trailing
     path and size match a Transmission file are kept, so memory stays bounded

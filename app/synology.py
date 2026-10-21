@@ -361,7 +361,7 @@ def analyze(
 
         if request.transmission_servers:
             # Task lists are read first so the file scan can locate each
-            # /download entry on DSM without the user configuring a mapping.
+            # /downloads entry on DSM without the user configuring a mapping.
             progress(3, "读取 Transmission 任务列表")
             transmission_connections, torrent_lists, transmission_warnings = load_torrents(request.transmission_servers)
             warnings.extend(transmission_warnings)

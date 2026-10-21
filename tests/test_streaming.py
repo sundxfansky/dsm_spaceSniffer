@@ -18,7 +18,7 @@ def test_analysis_discovers_transmission_download_paths_from_scan(monkeypatch):
 
     volume = VolumeInfo(path="/volume1", filesystem="test", total_bytes=100, used_bytes=50, available_bytes=50, usage_percent=50)
     old = int((datetime.now(UTC) - timedelta(days=40)).timestamp())
-    torrents = [{"id": 7, "name": "ep", "downloadDir": "/download/tv", "doneDate": old, "percentDone": 1,
+    torrents = [{"id": 7, "name": "ep", "downloadDir": "/downloads/tv", "doneDate": old, "percentDone": 1,
                  "files": [{"name": "ep1.mkv", "length": 100}]}]
 
     class Client:
@@ -47,7 +47,7 @@ def test_analysis_discovers_transmission_download_paths_from_scan(monkeypatch):
                           transmission_servers=[TransmissionServer(address="tr")])
     result = synology.analyze(req, lambda *_: None)
     connection = result["transmission_connections"][0]
-    assert connection["path_mappings"] == [{"tr_path": "/download/tv", "dsm_path": "/volume1/share/tv", "matched_files": 1}]
+    assert connection["path_mappings"] == [{"tr_path": "/downloads/tv", "dsm_path": "/volume1/share/tv", "matched_files": 1}]
     assert [row["dsm_path"] for row in result["transmission_candidates"]] == ["/volume1/share/tv/ep1.mkv"]
     assert result["complete"]
 

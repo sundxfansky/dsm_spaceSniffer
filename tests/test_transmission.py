@@ -16,11 +16,11 @@ def test_transmission_candidates_require_old_small_single_file_and_television_fo
     old = int((datetime.now(UTC) - timedelta(days=31)).timestamp())
     server = TransmissionServer(name="客厅", address="tr.local")
     torrents = [
-        {"id": 1, "name": "old", "downloadDir": "/download/tv", "doneDate": old, "percentDone": 1,
+        {"id": 1, "name": "old", "downloadDir": "/downloads/tv", "doneDate": old, "percentDone": 1,
          "files": [{"name": "old.mkv", "length": 100}]},
-        {"id": 2, "name": "large", "downloadDir": "/download/tv", "doneDate": old, "percentDone": 1,
+        {"id": 2, "name": "large", "downloadDir": "/downloads/tv", "doneDate": old, "percentDone": 1,
          "files": [{"name": "large.mkv", "length": 2_000_000}]},
-        {"id": 3, "name": "folder", "downloadDir": "/download/tv", "doneDate": old, "percentDone": 1,
+        {"id": 3, "name": "folder", "downloadDir": "/downloads/tv", "doneDate": old, "percentDone": 1,
          "files": [{"name": "dir/a.mkv", "length": 100}, {"name": "dir/b.srt", "length": 20}]},
     ]
     locator = _locate(torrents, [
@@ -32,17 +32,17 @@ def test_transmission_candidates_require_old_small_single_file_and_television_fo
                "paths": ["/volume1/downloads/tv/old.mkv", "/volume1/电视剧/old.mkv"]}]
     mappings, candidates, warnings = find_candidates([server], [torrents], locator, groups, max_file_mb=1, age_days=30)
     assert not warnings
-    assert mappings == [[{"tr_path": "/download/tv", "dsm_path": "/volume1/downloads/tv", "matched_files": 2}]]
+    assert mappings == [[{"tr_path": "/downloads/tv", "dsm_path": "/volume1/downloads/tv", "matched_files": 2}]]
     assert len(candidates) == 1
     assert candidates[0]["dsm_path"] == "/volume1/downloads/tv/old.mkv"
 
 
 def test_each_first_level_download_entry_is_located_independently():
     torrents = [
-        {"id": 1, "downloadDir": "/download/movies", "files": [{"name": "a.mkv", "length": 10}]},
-        {"id": 2, "downloadDir": "/download/movies", "files": [{"name": "Show/b.mkv", "length": 20}]},
-        {"id": 3, "downloadDir": "/download", "files": [{"name": "series/S01/c.mkv", "length": 30}]},
-        {"id": 4, "downloadDir": "/download", "files": [{"name": "loose.iso", "length": 40}]},
+        {"id": 1, "downloadDir": "/downloads/movies", "files": [{"name": "a.mkv", "length": 10}]},
+        {"id": 2, "downloadDir": "/downloads/movies", "files": [{"name": "Show/b.mkv", "length": 20}]},
+        {"id": 3, "downloadDir": "/downloads", "files": [{"name": "series/S01/c.mkv", "length": 30}]},
+        {"id": 4, "downloadDir": "/downloads", "files": [{"name": "loose.iso", "length": 40}]},
         {"id": 5, "downloadDir": "/other", "files": [{"name": "ignored.mkv", "length": 50}]},
     ]
     locator = _locate(torrents, [
@@ -63,7 +63,7 @@ def test_each_first_level_download_entry_is_located_independently():
 
 
 def test_majority_of_matching_files_decides_location():
-    torrents = [{"id": n, "downloadDir": "/download/tv", "files": [{"name": f"e{n}.mkv", "length": n}]} for n in range(1, 4)]
+    torrents = [{"id": n, "downloadDir": "/downloads/tv", "files": [{"name": f"e{n}.mkv", "length": n}]} for n in range(1, 4)]
     locator = _locate(torrents, [
         ("/volume1/电视剧/Show/e1.mkv", 1),
         ("/volume1/downloads/tv/e1.mkv", 1),
@@ -74,7 +74,7 @@ def test_majority_of_matching_files_decides_location():
 
 
 def test_tie_prefers_folder_named_like_entry_outside_television_library():
-    torrents = [{"id": 1, "downloadDir": "/download/tv", "files": [{"name": "e1.mkv", "length": 1}]}]
+    torrents = [{"id": 1, "downloadDir": "/downloads/tv", "files": [{"name": "e1.mkv", "length": 1}]}]
     locator = _locate(torrents, [("/volume1/电视剧/e1.mkv", 1), ("/volume1/downloads/tv/e1.mkv", 1)])
     assert locator.locate(torrents)["tv"]["dsm_path"] == "/volume1/downloads/tv"
 
@@ -82,13 +82,13 @@ def test_tie_prefers_folder_named_like_entry_outside_television_library():
 def test_unlocated_entries_are_reported_and_skipped():
     old = int((datetime.now(UTC) - timedelta(days=31)).timestamp())
     server = TransmissionServer(name="客厅", address="tr.local")
-    torrents = [{"id": 1, "downloadDir": "/download/missing", "doneDate": old, "percentDone": 1,
+    torrents = [{"id": 1, "downloadDir": "/downloads/missing", "doneDate": old, "percentDone": 1,
                  "files": [{"name": "x.mkv", "length": 5}]}]
     locator = _locate(torrents, [])
     mappings, candidates, warnings = find_candidates([server], [torrents], locator, [], max_file_mb=1, age_days=30)
-    assert mappings == [[{"tr_path": "/download/missing", "dsm_path": None, "matched_files": 0}]]
+    assert mappings == [[{"tr_path": "/downloads/missing", "dsm_path": None, "matched_files": 0}]]
     assert not candidates
-    assert "/download/missing" in warnings[0]
+    assert "/downloads/missing" in warnings[0]
 
 
 def test_load_torrents_reports_offline_servers(monkeypatch):
@@ -107,6 +107,47 @@ def test_load_torrents_reports_offline_servers(monkeypatch):
     assert [row["connected"] for row in connections] == [True, False]
     assert lists == [[{"id": 1}], None]
     assert len(warnings) == 1
+
+
+def test_torrents_are_fetched_in_batches_and_trimmed(monkeypatch):
+    from app import transmission
+
+    calls = []
+
+    def call(self, method, arguments=None):
+        calls.append(arguments)
+        if arguments["fields"] == ["id"]:
+            return {"torrents": [{"id": n} for n in range(5)]}
+        return {"torrents": [{"id": n, "files": [{"name": f"{n}.mkv", "length": n, "bytesCompleted": n}]}
+                             for n in arguments["ids"]]}
+
+    monkeypatch.setattr(transmission, "TORRENT_BATCH_SIZE", 2)
+    monkeypatch.setattr(transmission.TransmissionClient, "call", call)
+    torrents = transmission.TransmissionClient(TransmissionServer(address="tr")).torrents()
+    assert [row["id"] for row in torrents] == [0, 1, 2, 3, 4]
+    assert [args.get("ids") for args in calls[1:]] == [[0, 1], [2, 3], [4]]
+    assert torrents[0]["files"] == [{"name": "0.mkv", "length": 0}]
+
+
+def test_oversized_response_is_reported_instead_of_invalid_json(monkeypatch):
+    from app import transmission
+
+    class Response:
+        def __enter__(self):
+            return self
+        def __exit__(self, *_):
+            return False
+        def read(self, limit):
+            return b"{" * limit
+
+    monkeypatch.setattr(transmission, "MAX_RESPONSE_BYTES", 8)
+    monkeypatch.setattr(transmission.urllib.request, "urlopen", lambda *_, **__: Response())
+    try:
+        transmission.TransmissionClient(TransmissionServer(address="tr")).call("torrent-get")
+    except transmission.TransmissionError as exc:
+        assert "超过" in str(exc)
+    else:
+        raise AssertionError("oversized response must be rejected")
 
 
 def test_legacy_mapping_fields_are_ignored():

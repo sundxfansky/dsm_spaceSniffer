@@ -129,7 +129,7 @@ function transmissionTemplate(server, index) {
     <label class="field"><span>账户（可选）</span><input data-key="username" value="${value("username")}" autocomplete="username"></label>
     <label class="field"><span>密码（可选）</span><input data-key="password" type="password" value="${value("password")}" autocomplete="current-password"></label>
     <div class="transmission-status" data-status>${server.statusText || "未测试连接"}</div>
-    <div class="transmission-mappings" data-mappings>分析时自动在所选存储空间中查找 /download 下各一级目录对应的 DSM 路径</div>
+    <div class="transmission-mappings" data-mappings>分析时自动在所选存储空间中查找 /downloads 下各一级目录对应的 DSM 路径</div>
   </div>`;
 }
 
@@ -386,12 +386,12 @@ function renderResults() {
     const rows = connection.path_mappings;
     if (mappings && connection.connected) {
       mappings.innerHTML = !rows
-        ? "扫描中，完成后显示 /download 一级目录对应的 DSM 路径"
+        ? "扫描中，完成后显示 /downloads 一级目录对应的 DSM 路径"
         : rows.length
           ? rows.map((row) => row.dsm_path
             ? `<span>${escapeHtml(row.tr_path)} → ${escapeHtml(row.dsm_path)} <small>${row.matched_files} 个文件匹配</small></span>`
             : `<span class="is-missing">${escapeHtml(row.tr_path)} → 未找到</span>`).join("")
-          : "/download 下没有任务";
+          : "/downloads 下没有任务";
     }
   });
   $("#large-directory-count").textContent = result.large_directories_total || 0;
