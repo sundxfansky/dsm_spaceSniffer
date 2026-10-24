@@ -37,6 +37,20 @@ docker compose up -d --build
 docker compose down
 ```
 
+## Windows 客户端
+
+双击 `DSMStorageInspector.exe` 即可：服务在本机 `127.0.0.1` 后台运行并自动打开浏览器（默认 <http://localhost:8080>，端口被占用时自动换一个）。任务栏托盘图标可“打开网页”或“退出”；重复双击只会重新打开网页，不会启动第二个服务。日志在 `%LOCALAPPDATA%\DSMStorageInspector\launcher.log`。无需安装 Python。
+
+服务只监听本机，局域网其他设备无法访问。
+
+自行构建（需要 Python 3.12）：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File windows\build.ps1
+```
+
+产物为 `dist\DSMStorageInspector\` 目录和 `dist\DSMStorageInspector-windows.zip`，分发时需整个目录（或 zip）一起拷贝。
+
 ## 本地开发
 
 ```bash
