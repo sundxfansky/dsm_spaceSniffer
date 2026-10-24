@@ -125,13 +125,28 @@ function transmissionTemplate(server, index) {
     <label class="field"><span>名称</span><input data-key="name" value="${value("name")}" placeholder="客厅 TR"></label>
     <label class="field"><span>RPC 地址</span><input data-key="address" value="${value("address")}" placeholder="http://tr.local"></label>
     <label class="field"><span>端口</span><input data-key="port" type="number" min="1" max="65535" value="${value("port")}"></label>
-    <label class="field"><span>TR 挂载路径</span><input data-key="mount_path" value="${value("mount_path")}" placeholder="/downloads"></label>
-    <label class="field"><span>DSM 对应路径</span><input data-key="local_path" value="${value("local_path")}" placeholder="/volume1/downloads"></label>
     <button type="button" class="secondary-button remove-transmission" data-remove="${index}">移除</button>
     <label class="field"><span>账户（可选）</span><input data-key="username" value="${value("username")}" autocomplete="username"></label>
     <label class="field"><span>密码（可选）</span><input data-key="password" type="password" value="${value("password")}" autocomplete="current-password"></label>
+    <label class="field"><span>TR 下载根目录</span><input data-key="download_root" value="${escapeHtml(server.download_root || "/downloads")}" placeholder="/downloads"></label>
     <div class="transmission-status" data-status>${server.statusText || "未测试连接"}</div>
+    <div class="transmission-mappings" data-mappings>${mappingsHtml({download_root: server.download_root})}</div>
   </div>`;
+}
+
+// Mappings arrive with every live snapshot; until the scan ends an unfound
+// entry only means it has not been matched yet.
+function mappingsHtml(connection) {
+  const root = escapeHtml(connection.download_root || "/downloads");
+  const rows = connection.path_mappings;
+  if (!rows) return `等待扫描，将在 ${root} 下各一级目录与 DSM 路径之间实时匹配`;
+  if (!rows.length) return `${root} 下没有任务`;
+  const final = Boolean(connection.mappings_final);
+  const found = rows.filter((row) => row.dsm_path).length;
+  const header = `<strong>当前挂载目录（${final ? "扫描完成" : "实时更新"}）：已定位 ${found} / ${rows.length}</strong>`;
+  return header + rows.map((row) => row.dsm_path
+    ? `<span>${escapeHtml(row.tr_path)} → ${escapeHtml(row.dsm_path)} <small>${row.matched_files} 个文件匹配</small></span>`
+    : `<span class="${final ? "is-missing" : "is-pending"}">${escapeHtml(row.tr_path)} → ${final ? "未找到" : "查找中…"}</span>`).join("");
 }
 
 function renderTransmissionServers() {
@@ -170,7 +185,7 @@ async function testTransmission(index) {
 
 $("#add-transmission").addEventListener("click", () => {
   state.transmissionServers = readTransmissionServers();
-  state.transmissionServers.push({name: `Transmission ${state.transmissionServers.length + 1}`, address: "", port: 9091, username: "", password: "", rpc_path: "/transmission/rpc", mount_path: "/downloads", local_path: "/volume1/downloads", enabled: true});
+  state.transmissionServers.push({name: `Transmission ${state.transmissionServers.length + 1}`, address: "", port: 9091, username: "", password: "", rpc_path: "/transmission/rpc", download_root: "/downloads", enabled: true});
   renderTransmissionServers();
 });
 
@@ -383,6 +398,8 @@ function renderResults() {
       : `连接失败：${connection.error || "未连接"}`;
     status.classList.toggle("is-online", Boolean(connection.connected));
     status.classList.toggle("is-error", !connection.connected);
+    const mappings = status.parentElement.querySelector("[data-mappings]");
+    if (mappings && connection.connected) mappings.innerHTML = mappingsHtml(connection);
   });
   $("#large-directory-count").textContent = result.large_directories_total || 0;
   const warnings = result.warnings || [];
